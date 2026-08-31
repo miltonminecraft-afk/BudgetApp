@@ -1,31 +1,33 @@
 package nl.milton.budgetapp;
 
 import android.Manifest;
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
-import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.text.InputType;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.EditText;
-import android.widget.HorizontalScrollView;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.Spinner;
-import android.widget.TextView;
-import android.widget.Toast;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 
 import androidx.activity.ComponentActivity;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import nl.milton.budgetapp.data.AppDatabase;
 import nl.milton.budgetapp.data.BudgetDao;
@@ -37,104 +39,100 @@ import nl.milton.budgetapp.data.SavingsGoalEntity;
 import nl.milton.budgetapp.data.TransactionEntity;
 import nl.milton.budgetapp.data.UnknownItemEntity;
 import nl.milton.budgetapp.domain.BudgetPeriods;
-import nl.milton.budgetapp.domain.Money;
 import nl.milton.budgetapp.domain.Normalizer;
+import nl.milton.budgetapp.importers.BankStatementParser;
 import nl.milton.budgetapp.importers.ImportCoordinator;
 import nl.milton.budgetapp.importers.PdfStatementImporter;
 import nl.milton.budgetapp.importers.ReceiptParser;
 
-import java.security.MessageDigest;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Calendar;
-import java.util.Date;
-import java.util.List;
-import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 public class MainActivity extends ComponentActivity {
-    private static final int REQ_PDF = 100;
-    private static final int REQ_RECEIPT = 101;
-
-    private static final int BG = 0xFF0B0D10;
-    private static final int PANEL = 0xFF161B22;
-    private static final int TEXT = 0xFFF0F6FC;
-    private static final int MUTED = 0xFF8B949E;
-    private static final int ACCENT = 0xFF56D364;
-    private static final int DANGER = 0xFFFF7B72;
-
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private BudgetDao dao;
-    private LinearLayout content;
-    private TextView title;
-    private String currentScreen = "dashboard";
+    private WebView webView;
+    private boolean openLearning;
+
+    private final ActivityResultLauncher<Intent> pdfLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() != RESULT_OK || result.getData() == null || result.getData().getData() == null) return;
+                importPdf(result.getData().getData());
+            });
+
+    private final ActivityResultLauncher<Intent> receiptLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                    String text = result.getData().getStringExtra("receipt_text");
+                    if (text != null && !text.trim().isEmpty()) processReceipt(text);
+                    else callJsError("onReceiptError", "Er is geen tekst op de bon herkend.");
+                } else if (result.getData() != null) {
+                    String error = result.getData().getStringExtra("error");
+                    if (error != null && !error.isEmpty()) callJsError("onReceiptError", error);
+                }
+            });
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         dao = AppDatabase.get(this).budgetDao();
-        setContentView(buildShell());
-
-        if (Build.VERSION.SDK_INT >= 33
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        openLearning = getIntent().getBooleanExtra("open_learning", false);
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 991);
         }
-
         io.execute(() -> {
             seedDefaults();
-            runOnUiThread(() -> {
-                if (getIntent().getBooleanExtra("open_learning", false)) renderImport();
-                else renderDashboard();
-            });
+            runOnUiThread(this::buildWebApp);
         });
     }
 
-    private View buildShell() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(BG);
-
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(dp(18), dp(14), dp(18), dp(12));
-        header.setBackgroundColor(PANEL);
-        header.addView(text("BudgetApp", 22, TEXT, true));
-        title = text("Overzicht", 13, MUTED, false);
-        header.addView(title);
-        root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(14), dp(14), dp(14), dp(22));
-        scroll.addView(content);
-        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        HorizontalScrollView navScroll = new HorizontalScrollView(this);
-        navScroll.setHorizontalScrollBarEnabled(false);
-        navScroll.setBackgroundColor(PANEL);
-        LinearLayout nav = new LinearLayout(this);
-        nav.setOrientation(LinearLayout.HORIZONTAL);
-        nav.setPadding(dp(6), dp(6), dp(6), dp(6));
-        nav.addView(navButton("Overzicht", v -> renderDashboard()));
-        nav.addView(navButton("Potjes", v -> renderPots()));
-        nav.addView(navButton("Transacties", v -> renderTransactions()));
-        nav.addView(navButton("Import", v -> renderImport()));
-        nav.addView(navButton("Instellingen", v -> renderSettings()));
-        navScroll.addView(nav);
-        root.addView(navScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return root;
+    private void buildWebApp() {
+        webView = new WebView(this);
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(true);
+        webView.setBackgroundColor(0xFF0F1116);
+        webView.setWebChromeClient(new WebChromeClient());
+        webView.addJavascriptInterface(new AndroidBridge(), "BudgetAppAndroid");
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (openLearning) {
+                    openLearning = false;
+                    view.evaluateJavascript("window.BudgetAppNative&&window.BudgetAppNative.openReview()", null);
+                }
+            }
+        });
+        setContentView(webView);
+        webView.loadUrl("file:///android_asset/index.html");
     }
 
-    private Button navButton(String label, View.OnClickListener listener) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextColor(TEXT);
-        b.setOnClickListener(listener);
-        return b;
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.getBooleanExtra("open_learning", false)) {
+            if (webView == null) openLearning = true;
+            else webView.evaluateJavascript("window.BudgetAppNative&&window.BudgetAppNative.openReview()", null);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (webView != null) webView.evaluateJavascript("window.BudgetAppNative&&window.BudgetAppNative.refresh()", null);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (webView != null) webView.evaluateJavascript("window.BudgetAppNative&&window.BudgetAppNative.handleBack()", null);
+        else super.onBackPressed();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (webView != null) webView.destroy();
+        io.shutdown();
+        super.onDestroy();
     }
 
     private void seedDefaults() {
@@ -160,7 +158,6 @@ public class MainActivity extends ComponentActivity {
             fuel.sortOrder = 2;
             dao.insertPot(fuel);
         }
-
         if (dao.getActiveSavingsGoal() == null) {
             SavingsGoalEntity goal = new SavingsGoalEntity();
             goal.name = "Spaardoel";
@@ -170,780 +167,460 @@ public class MainActivity extends ComponentActivity {
         }
     }
 
-    private void renderDashboard() {
-        currentScreen = "dashboard";
-        title.setText("Overzicht");
-        showLoading();
-        io.execute(() -> {
-            List<PotEntity> pots = dao.getActivePots();
-            SavingsGoalEntity goal = dao.getActiveSavingsGoal();
-            long now = System.currentTimeMillis();
-            Calendar c = Calendar.getInstance();
-            c.setTimeInMillis(now);
-            c.add(Calendar.DAY_OF_MONTH, -90);
-            long net90 = dao.sumNetBetween(c.getTimeInMillis(), now);
-
-            SharedPreferences prefs = getSharedPreferences("budgetapp", MODE_PRIVATE);
-            boolean known = prefs.getBoolean("has_known_balance", false);
-            long balance = known ? prefs.getLong("known_balance_cents", 0L) : dao.sumBalanceDelta();
-
-            List<PotStatus> status = new ArrayList<>();
-            for (PotEntity pot : pots) {
-                if (pot.hiddenFromOverview) continue;
-                BudgetPeriods.Range range = BudgetPeriods.currentRange(pot.periodType, now);
-                long spent = dao.sumDirectSpendForPot(pot.id, range.startMs, range.endMs)
-                        + dao.sumReceiptSpendForPot(pot.id, range.startMs, range.endMs);
-                status.add(new PotStatus(pot, spent));
-            }
-
-            runOnUiThread(() -> {
-                content.removeAllViews();
-                content.addView(section("Saldo"));
-                content.addView(card((known ? "Bekend banksaldo" : "Berekend saldo") + "\n" + Money.format(balance),
-                        known ? "Laatste gevalideerde PDF" : "Som van geregistreerde transacties"));
-                content.addView(section("Potjes nu"));
-                for (PotStatus ps : status) {
-                    long remaining = ps.pot.budgetCents - ps.spent;
-                    TextView row = card(ps.pot.name + "  " + Money.format(remaining) + " over",
-                            Money.format(ps.spent) + " gebruikt van " + Money.format(ps.pot.budgetCents)
-                                    + " per " + BudgetPeriods.displayName(ps.pot.periodType));
-                    row.setOnClickListener(v -> showPotDialog(ps.pot));
-                    content.addView(row);
-                }
-
-                content.addView(section("Spaardoel"));
-                if (goal != null) {
-                    long left = Math.max(0L, goal.targetCents - goal.currentCents);
-                    long avgMonthly = Math.max(0L, Math.round(net90 / 3.0d));
-                    String eta;
-                    if (left == 0L) eta = "Doel bereikt";
-                    else if (avgMonthly <= 0L) eta = "Nog geen positieve spaartrend om een schatting te maken";
-                    else {
-                        long months = (long) Math.ceil(left / (double) avgMonthly);
-                        eta = "Geschat: " + months + " maand" + (months == 1 ? "" : "en")
-                                + " bij " + Money.format(avgMonthly) + " netto per maand";
-                    }
-                    TextView goalCard = card(goal.name + "  " + Money.format(goal.currentCents) + " / " + Money.format(goal.targetCents), eta);
-                    goalCard.setOnClickListener(v -> showSavingsGoalDialog(goal));
-                    content.addView(goalCard);
-                }
-            });
-        });
-    }
-
-    private void renderPots() {
-        currentScreen = "pots";
-        title.setText("Potjes");
-        showLoading();
-        io.execute(() -> {
-            List<PotEntity> pots = dao.getAllPots();
-            long now = System.currentTimeMillis();
-            List<PotStatus> status = new ArrayList<>();
-            for (PotEntity pot : pots) {
-                BudgetPeriods.Range range = BudgetPeriods.currentRange(pot.periodType, now);
-                long spent = dao.sumDirectSpendForPot(pot.id, range.startMs, range.endMs)
-                        + dao.sumReceiptSpendForPot(pot.id, range.startMs, range.endMs);
-                status.add(new PotStatus(pot, spent));
-            }
-            runOnUiThread(() -> {
-                content.removeAllViews();
-                content.addView(actionButton("+ Potje toevoegen", v -> showPotDialog(null)));
-                for (PotStatus ps : status) {
-                    String prefix = ps.pot.active ? "" : "Inactief • ";
-                    TextView row = card(prefix + ps.pot.name,
-                            Money.format(ps.pot.budgetCents) + " per " + BudgetPeriods.displayName(ps.pot.periodType)
-                                    + " • " + Money.format(Math.max(0L, ps.pot.budgetCents - ps.spent)) + " over");
-                    row.setOnClickListener(v -> showPotDialog(ps.pot));
-                    content.addView(row);
-                }
-            });
-        });
-    }
-
-    private void renderTransactions() {
-        currentScreen = "transactions";
-        title.setText("Transacties");
-        showLoading();
-        io.execute(() -> {
-            List<TransactionEntity> transactions = dao.getRecentTransactions(250);
-            runOnUiThread(() -> {
-                content.removeAllViews();
-                content.addView(actionButton("+ Handmatig toevoegen", v -> showTransactionDialog(null)));
-                if (transactions.isEmpty()) {
-                    content.addView(card("Nog geen transacties", "Importeer een PDF, scan een bon of voeg handmatig toe."));
-                    return;
-                }
-                SimpleDateFormat date = new SimpleDateFormat("dd-MM-yyyy HH:mm", Locale.ROOT);
-                for (TransactionEntity tx : transactions) {
-                    String name = !tx.merchant.isEmpty() ? tx.merchant : (!tx.description.isEmpty() ? tx.description : "Transactie");
-                    String subtitle = date.format(new Date(tx.occurredAt)) + " • " + tx.source
-                            + (tx.category.isEmpty() ? "" : " • " + tx.category);
-                    TextView row = card(name + "  " + Money.format(tx.amountCents), subtitle);
-                    row.setOnClickListener(v -> showTransactionDetails(tx.id));
-                    content.addView(row);
-                }
-            });
-        });
-    }
-
-    private void renderImport() {
-        currentScreen = "import";
-        title.setText("Import & leren");
-        content.removeAllViews();
-        content.addView(section("Bank"));
-        content.addView(actionButton("PDF-bankafschrift importeren", v -> {
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            i.setType("application/pdf");
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(i, REQ_PDF);
-        }));
-        content.addView(card("PDF-regels",
-                "Overlappende of opnieuw geïmporteerde afschriften voegen alleen ontbrekende transacties toe. Begin- en eindsaldo worden gecontroleerd wanneer beide in de PDF staan."));
-
-        content.addView(section("Bonnen"));
-        content.addView(actionButton("Bon scannen", v -> startActivityForResult(new Intent(this, ReceiptScanActivity.class), REQ_RECEIPT)));
-        content.addView(card("Bonregels per potje",
-                "Een bon kan zelfstandig worden opgeslagen. Bonregels kunnen afzonderlijk aan verschillende potjes worden gekoppeld. Bij een latere bankmatch telt de banktransactie maar één keer mee voor het saldo."));
-
-        content.addView(section("Live betaalmeldingen"));
-        content.addView(actionButton("Notificatietoegang openen", v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))));
-        content.addView(card("Rabobank + Google Wallet",
-                "BudgetApp registreert relevante betaalnotificaties lokaal. PDF-data corrigeert een notificatie alleen bij een strikte match op bedrag/richting, datum, tijd, merchant, kaart en referentie."));
-
-        content.addView(section("Nog te categoriseren"));
-        loadUnknownItems();
-    }
-
-    private void loadUnknownItems() {
-        io.execute(() -> {
-            List<UnknownItemEntity> unknown = dao.getUnknownItems();
-            runOnUiThread(() -> {
-                if (unknown.isEmpty()) {
-                    content.addView(card("Alles gecategoriseerd", "Er staan geen onbekende items in de wachtrij."));
-                    return;
-                }
-                for (UnknownItemEntity item : unknown) {
-                    TextView row = card(item.displayText + "  " + Money.format(item.amountCents), "Tik om potje en categorie te kiezen");
-                    row.setOnClickListener(v -> showUnknownItemDialog(item));
-                    content.addView(row);
-                }
-            });
-        });
-    }
-
-    private void renderSettings() {
-        currentScreen = "settings";
-        title.setText("Instellingen");
-        showLoading();
-        io.execute(() -> {
-            List<FixedCostEntity> costs = dao.getFixedCosts();
-            SavingsGoalEntity goal = dao.getActiveSavingsGoal();
-            runOnUiThread(() -> {
-                content.removeAllViews();
-                content.addView(section("Vaste lasten"));
-                content.addView(actionButton("+ Vaste last toevoegen", v -> showFixedCostDialog(null)));
-                if (costs.isEmpty()) {
-                    content.addView(card("Nog geen vaste lasten ingevoerd",
-                            "Jaarlijkse heffingen, zoals waterheffing, worden apart herkend en zijn geen zichtbaar potje."));
-                } else {
-                    for (FixedCostEntity cost : costs) {
-                        TextView row = card(cost.name + "  " + Money.format(cost.amountCents),
-                                BudgetPeriods.displayName(cost.periodType) + (cost.annualLevy ? " • jaarlijkse heffing" : ""));
-                        row.setOnClickListener(v -> showFixedCostDialog(cost));
-                        content.addView(row);
-                    }
-                }
-
-                content.addView(section("Spaardoel"));
-                if (goal != null) {
-                    TextView row = card(goal.name + "  " + Money.format(goal.currentCents) + " / " + Money.format(goal.targetCents), "Tik om aan te passen");
-                    row.setOnClickListener(v -> showSavingsGoalDialog(goal));
-                    content.addView(row);
-                }
-
-                content.addView(section("Privacy"));
-                content.addView(card("Lokaal op dit toestel",
-                        "Room/SQLite, PDF-OCR, bon-OCR, categoriegeheugen en transacties blijven lokaal. BudgetApp heeft geen cloud-account of externe analyse nodig."));
-            });
-        });
-    }
-
-    private void showPotDialog(PotEntity existing) {
-        boolean edit = existing != null;
-        PotEntity pot = edit ? existing : new PotEntity();
-        LinearLayout form = dialogForm();
-        EditText name = field("Naam", edit ? pot.name : "");
-        EditText amount = moneyField("Budget", edit ? Money.format(pot.budgetCents).replace("€", "").trim() : "");
-        Spinner period = periodSpinner(edit ? pot.periodType : BudgetPeriods.MONTH);
-        CheckBox active = check("Actief", edit ? pot.active : true);
-        CheckBox hidden = check("Verbergen in overzicht", edit && pot.hiddenFromOverview);
-        form.addView(name);
-        form.addView(amount);
-        form.addView(label("Periode"));
-        form.addView(period);
-        form.addView(active);
-        form.addView(hidden);
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle(edit ? "Potje aanpassen" : "Potje toevoegen")
-                .setView(wrapDialog(form))
-                .setPositiveButton("Opslaan", null)
-                .setNegativeButton("Annuleren", null);
-        if (edit) builder.setNeutralButton("Verwijderen", null);
-        AlertDialog dialog = builder.create();
-
-        dialog.setOnShowListener(x -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                try {
-                    pot.name = name.getText().toString().trim();
-                    pot.budgetCents = Math.abs(Money.parseCents(amount.getText().toString()));
-                    pot.periodType = periodCode(period.getSelectedItemPosition());
-                    pot.active = active.isChecked();
-                    pot.hiddenFromOverview = hidden.isChecked();
-                    if (pot.name.isEmpty()) throw new IllegalArgumentException("Naam is verplicht.");
-                    io.execute(() -> {
-                        if (edit) dao.updatePot(pot); else dao.insertPot(pot);
-                        runOnUiThread(() -> { dialog.dismiss(); refreshCurrent(); });
-                    });
-                } catch (Exception e) { toast(e.getMessage()); }
-            });
-            if (edit) {
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(DANGER);
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> io.execute(() -> {
-                    dao.deletePot(pot);
-                    runOnUiThread(() -> { dialog.dismiss(); refreshCurrent(); });
-                }));
-            }
-        });
-        dialog.show();
-    }
-
-    private void showTransactionDialog(TransactionEntity existing) {
-        boolean edit = existing != null;
-        TransactionEntity tx = edit ? existing : new TransactionEntity();
-        io.execute(() -> {
-            List<PotEntity> pots = dao.getActivePots();
-            runOnUiThread(() -> {
-                LinearLayout form = dialogForm();
-                EditText amount = moneyField("Bedrag (uitgave negatief)", edit ? String.format(Locale.ROOT, "%.2f", tx.amountCents / 100.0d).replace('.', ',') : "");
-                EditText merchant = field("Merchant / naam", edit ? tx.merchant : "");
-                EditText description = field("Omschrijving", edit ? tx.description : "");
-                EditText category = field("Categorie", edit ? tx.category : "");
-                Spinner potSpinner = potSpinner(pots, edit ? tx.potId : null);
-                form.addView(amount);
-                form.addView(merchant);
-                form.addView(description);
-                form.addView(category);
-                form.addView(label("Potje"));
-                form.addView(potSpinner);
-
-                AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                        .setTitle(edit ? "Transactie aanpassen" : "Handmatige transactie")
-                        .setView(wrapDialog(form))
-                        .setPositiveButton("Opslaan", null)
-                        .setNegativeButton("Annuleren", null);
-                if (edit) builder.setNeutralButton("Verwijderen", null);
-                AlertDialog dialog = builder.create();
-
-                dialog.setOnShowListener(x -> {
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                        try {
-                            tx.amountCents = Money.parseCents(amount.getText().toString());
-                            tx.merchant = merchant.getText().toString().trim();
-                            tx.description = description.getText().toString().trim();
-                            tx.category = category.getText().toString().trim();
-                            tx.potId = selectedPotId(pots, potSpinner.getSelectedItemPosition());
-                            if (!edit) {
-                                tx.source = "MANUAL";
-                                tx.occurredAt = System.currentTimeMillis();
-                                tx.importedAt = System.currentTimeMillis();
-                                tx.dateText = new SimpleDateFormat("dd-MM-yyyy", Locale.ROOT).format(new Date(tx.occurredAt));
-                                tx.timeText = new SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date(tx.occurredAt));
-                                tx.dedupeKey = hash("MANUAL|" + tx.occurredAt + "|" + tx.amountCents + "|" + Math.random());
-                            }
-                            io.execute(() -> {
-                                if (edit) dao.updateTransaction(tx); else dao.insertTransaction(tx);
-                                runOnUiThread(() -> { dialog.dismiss(); refreshCurrent(); });
-                            });
-                        } catch (Exception e) { toast("Controleer het bedrag."); }
-                    });
-                    if (edit) {
-                        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(DANGER);
-                        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> io.execute(() -> {
-                            dao.deleteTransaction(tx);
-                            runOnUiThread(() -> { dialog.dismiss(); refreshCurrent(); });
-                        }));
-                    }
-                });
-                dialog.show();
-            });
-        });
-    }
-
-    private void showTransactionDetails(long id) {
-        io.execute(() -> {
-            TransactionEntity tx = dao.getTransaction(id);
-            List<ReceiptLineEntity> lines = dao.getReceiptLines(id);
-            runOnUiThread(() -> {
-                if (tx == null) return;
-                LinearLayout detail = dialogForm();
-                addDetail(detail, "Bedrag", Money.format(tx.amountCents));
-                addDetail(detail, "Naam", tx.merchant);
-                addDetail(detail, "Omschrijving", tx.description);
-                addDetail(detail, "Categorie", tx.category);
-                addDetail(detail, "Bron", tx.source);
-                addDetail(detail, "Datum", new SimpleDateFormat("dd-MM-yyyy HH:mm", Locale.ROOT).format(new Date(tx.occurredAt)));
-                addDetail(detail, "Kaart", tx.cardReference);
-                addDetail(detail, "Referentie", tx.bankReference);
-                if (tx.excludeFromPots) addDetail(detail, "Potjes", "Verborgen jaarlijkse heffing");
-                if (!lines.isEmpty()) {
-                    detail.addView(section("Bonregels"));
-                    for (ReceiptLineEntity line : lines) {
-                        TextView lineView = card(line.description + "  " + Money.format(line.amountCents),
-                                line.category.isEmpty() ? "Tik om potje/categorie te wijzigen" : line.category);
-                        lineView.setOnClickListener(v -> showReceiptLineDialog(line));
-                        detail.addView(lineView);
-                    }
-                }
-                new AlertDialog.Builder(this)
-                        .setTitle(tx.merchant.isEmpty() ? "Transactie" : tx.merchant)
-                        .setView(wrapDialog(detail))
-                        .setPositiveButton("Sluiten", null)
-                        .setNeutralButton("Bewerken", (d, w) -> showTransactionDialog(tx))
-                        .show();
-            });
-        });
-    }
-
-    private void showFixedCostDialog(FixedCostEntity existing) {
-        boolean edit = existing != null;
-        FixedCostEntity cost = edit ? existing : new FixedCostEntity();
-        LinearLayout form = dialogForm();
-        EditText name = field("Naam", edit ? cost.name : "");
-        EditText amount = moneyField("Bedrag", edit ? String.format(Locale.ROOT, "%.2f", cost.amountCents / 100.0d).replace('.', ',') : "");
-        Spinner period = periodSpinner(edit ? cost.periodType : BudgetPeriods.MONTH);
-        EditText due = field("Vervaldag (1-31)", edit ? String.valueOf(cost.dueDay) : "1");
-        due.setInputType(InputType.TYPE_CLASS_NUMBER);
-        CheckBox active = check("Actief", edit ? cost.active : true);
-        CheckBox annual = check("Jaarlijkse heffing (niet als potje tonen)", edit && cost.annualLevy);
-        form.addView(name);
-        form.addView(amount);
-        form.addView(label("Periode"));
-        form.addView(period);
-        form.addView(due);
-        form.addView(active);
-        form.addView(annual);
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle(edit ? "Vaste last aanpassen" : "Vaste last toevoegen")
-                .setView(wrapDialog(form))
-                .setPositiveButton("Opslaan", null)
-                .setNegativeButton("Annuleren", null);
-        if (edit) builder.setNeutralButton("Verwijderen", null);
-        AlertDialog dialog = builder.create();
-        dialog.setOnShowListener(x -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                try {
-                    cost.name = name.getText().toString().trim();
-                    cost.amountCents = Math.abs(Money.parseCents(amount.getText().toString()));
-                    cost.periodType = periodCode(period.getSelectedItemPosition());
-                    cost.dueDay = Math.max(1, Math.min(31, Integer.parseInt(due.getText().toString())));
-                    cost.active = active.isChecked();
-                    cost.annualLevy = annual.isChecked();
-                    if (cost.name.isEmpty()) throw new IllegalArgumentException("Naam is verplicht.");
-                    io.execute(() -> {
-                        if (edit) dao.updateFixedCost(cost); else dao.insertFixedCost(cost);
-                        runOnUiThread(() -> { dialog.dismiss(); renderSettings(); });
-                    });
-                } catch (Exception e) { toast("Controleer de invoer."); }
-            });
-            if (edit) {
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(DANGER);
-                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> io.execute(() -> {
-                    dao.deleteFixedCost(cost);
-                    runOnUiThread(() -> { dialog.dismiss(); renderSettings(); });
-                }));
-            }
-        });
-        dialog.show();
-    }
-
-    private void showSavingsGoalDialog(SavingsGoalEntity goal) {
-        LinearLayout form = dialogForm();
-        EditText name = field("Naam", goal.name);
-        EditText current = moneyField("Nu gespaard", String.format(Locale.ROOT, "%.2f", goal.currentCents / 100.0d).replace('.', ','));
-        EditText target = moneyField("Doel", String.format(Locale.ROOT, "%.2f", goal.targetCents / 100.0d).replace('.', ','));
-        form.addView(name);
-        form.addView(current);
-        form.addView(target);
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Spaardoel aanpassen")
-                .setView(wrapDialog(form))
-                .setPositiveButton("Opslaan", null)
-                .setNegativeButton("Annuleren", null)
-                .create();
-        dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+    private final class AndroidBridge {
+        @JavascriptInterface
+        public String getState() {
             try {
-                goal.name = name.getText().toString().trim();
-                goal.currentCents = Math.max(0L, Money.parseCents(current.getText().toString()));
-                goal.targetCents = Math.max(0L, Money.parseCents(target.getText().toString()));
-                io.execute(() -> {
-                    dao.updateSavingsGoal(goal);
-                    runOnUiThread(() -> { dialog.dismiss(); refreshCurrent(); });
-                });
-            } catch (Exception e) { toast("Controleer de bedragen."); }
-        }));
-        dialog.show();
-    }
+                JSONObject root = new JSONObject();
+                JSONArray pots = new JSONArray();
+                long currentTime = System.currentTimeMillis();
+                for (PotEntity pot : dao.getAllPots()) {
+                    JSONObject o = new JSONObject();
+                    o.put("id", pot.id);
+                    o.put("name", pot.name);
+                    o.put("budgetCents", pot.budgetCents);
+                    o.put("periodType", pot.periodType);
+                    o.put("active", pot.active);
+                    o.put("hiddenFromOverview", pot.hiddenFromOverview);
+                    o.put("sortOrder", pot.sortOrder);
+                    BudgetPeriods.Range r = BudgetPeriods.currentRange(pot.periodType, currentTime);
+                    long spent = dao.sumDirectSpendForPot(pot.id, r.startMs, r.endMs) + dao.sumReceiptSpendForPot(pot.id, r.startMs, r.endMs);
+                    o.put("spentCents", spent);
+                    pots.put(o);
+                }
+                root.put("pots", pots);
 
-    private void showUnknownItemDialog(UnknownItemEntity item) {
-        io.execute(() -> {
-            List<PotEntity> pots = dao.getActivePots();
-            runOnUiThread(() -> {
-                LinearLayout form = dialogForm();
-                Spinner pot = potSpinner(pots, null);
-                EditText category = field("Categorie", "");
-                CheckBox remember = check("Onthoud deze keuze voor dit item", true);
-                form.addView(label("Potje"));
-                form.addView(pot);
-                form.addView(category);
-                form.addView(remember);
-                AlertDialog dialog = new AlertDialog.Builder(this)
-                        .setTitle(item.displayText)
-                        .setView(wrapDialog(form))
-                        .setPositiveButton("Opslaan", null)
-                        .setNegativeButton("Annuleren", null)
-                        .create();
-                dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                    Long potId = selectedPotId(pots, pot.getSelectedItemPosition());
-                    String categoryValue = category.getText().toString().trim();
-                    io.execute(() -> {
-                        if (item.receiptLineId > 0) {
-                            ReceiptLineEntity line = dao.getReceiptLine(item.receiptLineId);
-                            if (line != null) {
-                                line.potId = potId;
-                                line.category = categoryValue;
-                                dao.updateReceiptLine(line);
-                            }
-                        }
-                        if (remember.isChecked() && !item.normalizedText.isEmpty()) {
-                            MerchantRuleEntity rule = new MerchantRuleEntity();
-                            rule.matchType = item.receiptLineId > 0 ? "ITEM" : "MERCHANT";
-                            rule.matchText = item.normalizedText;
-                            rule.potId = potId;
-                            rule.category = categoryValue;
-                            dao.upsertRule(rule);
-                        }
-                        dao.deleteUnknownItem(item);
-                        runOnUiThread(() -> { dialog.dismiss(); renderImport(); });
-                    });
-                }));
-                dialog.show();
-            });
-        });
-    }
+                JSONArray transactions = new JSONArray();
+                for (TransactionEntity tx : dao.getRecentTransactions(1000)) transactions.put(transactionJson(tx));
+                root.put("transactions", transactions);
 
-    private void showReceiptLineDialog(ReceiptLineEntity line) {
-        io.execute(() -> {
-            List<PotEntity> pots = dao.getActivePots();
-            runOnUiThread(() -> {
-                LinearLayout form = dialogForm();
-                Spinner pot = potSpinner(pots, line.potId);
-                EditText category = field("Categorie", line.category);
-                CheckBox remember = check("Onthoud voor dezelfde bonregel", true);
-                form.addView(label("Potje"));
-                form.addView(pot);
-                form.addView(category);
-                form.addView(remember);
-                AlertDialog dialog = new AlertDialog.Builder(this)
-                        .setTitle(line.description)
-                        .setView(wrapDialog(form))
-                        .setPositiveButton("Opslaan", null)
-                        .setNegativeButton("Annuleren", null)
-                        .create();
-                dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                    line.potId = selectedPotId(pots, pot.getSelectedItemPosition());
-                    line.category = category.getText().toString().trim();
-                    io.execute(() -> {
-                        dao.updateReceiptLine(line);
-                        if (remember.isChecked()) {
-                            MerchantRuleEntity rule = new MerchantRuleEntity();
-                            rule.matchType = "ITEM";
-                            rule.matchText = Normalizer.key(line.description);
-                            rule.potId = line.potId;
-                            rule.category = line.category;
-                            dao.upsertRule(rule);
-                        }
-                        runOnUiThread(dialog::dismiss);
-                    });
-                }));
-                dialog.show();
-            });
-        });
-    }
+                JSONArray costs = new JSONArray();
+                for (FixedCostEntity cost : dao.getFixedCosts()) {
+                    JSONObject o = new JSONObject();
+                    o.put("id", cost.id);
+                    o.put("name", cost.name);
+                    o.put("amountCents", cost.amountCents);
+                    o.put("periodType", cost.periodType);
+                    o.put("dueDay", cost.dueDay);
+                    o.put("active", cost.active);
+                    o.put("annualLevy", cost.annualLevy);
+                    costs.put(o);
+                }
+                root.put("fixedCosts", costs);
 
-    private void importReceiptText(String rawText) {
-        ReceiptParser.ParsedReceipt parsed = ReceiptParser.parse(rawText);
-        if (parsed.totalCents <= 0L) {
-            toast("Geen totaalbedrag op de bon gevonden.");
-            return;
+                SavingsGoalEntity goal = dao.getActiveSavingsGoal();
+                if (goal != null) {
+                    JSONObject o = new JSONObject();
+                    o.put("id", goal.id);
+                    o.put("name", goal.name);
+                    o.put("currentCents", goal.currentCents);
+                    o.put("targetCents", goal.targetCents);
+                    o.put("active", goal.active);
+                    root.put("goal", o);
+                } else root.put("goal", JSONObject.NULL);
+
+                JSONArray unknown = new JSONArray();
+                for (UnknownItemEntity item : dao.getUnknownItems()) {
+                    JSONObject o = new JSONObject();
+                    o.put("id", item.id);
+                    o.put("receiptLineId", item.receiptLineId);
+                    o.put("normalizedText", item.normalizedText);
+                    o.put("displayText", item.displayText);
+                    o.put("amountCents", item.amountCents);
+                    o.put("createdAt", item.createdAt);
+                    unknown.put(o);
+                }
+                root.put("unknown", unknown);
+
+                SharedPreferences prefs = getSharedPreferences("budgetapp", MODE_PRIVATE);
+                if (prefs.getBoolean("has_known_balance", false)) root.put("knownBalanceCents", prefs.getLong("known_balance_cents", 0L));
+                else root.put("knownBalanceCents", JSONObject.NULL);
+                root.put("platform", "android");
+                return root.toString();
+            } catch (Exception e) {
+                return "{\"pots\":[],\"transactions\":[],\"fixedCosts\":[],\"unknown\":[],\"goal\":null,\"knownBalanceCents\":null,\"platform\":\"android\"}";
+            }
         }
-        EditText merchant = field("Winkel / merchant", parsed.merchant);
-        new AlertDialog.Builder(this)
-                .setTitle("Bon opslaan")
-                .setMessage(parsed.lines.size() + " bonregels gevonden • totaal " + Money.format(parsed.totalCents))
-                .setView(merchant)
-                .setPositiveButton("Opslaan", (dialog, which) -> io.execute(() -> {
-                    long now = System.currentTimeMillis();
-                    TransactionEntity tx = new TransactionEntity();
-                    tx.source = "RECEIPT";
-                    tx.importedAt = now;
-                    tx.occurredAt = now;
-                    tx.amountCents = -parsed.totalCents;
-                    tx.merchant = merchant.getText().toString().trim();
-                    tx.description = "Bon";
-                    tx.dateText = new SimpleDateFormat("dd-MM-yyyy", Locale.ROOT).format(new Date(now));
-                    tx.timeText = new SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date(now));
-                    tx.dedupeKey = hash("RECEIPT|" + now + "|" + parsed.totalCents + "|" + Math.random());
-                    tx.affectsBalance = true;
-                    long txId = dao.insertTransaction(tx);
-                    for (ReceiptParser.ParsedLine sourceLine : parsed.lines) {
-                        ReceiptLineEntity line = new ReceiptLineEntity();
-                        line.transactionId = txId;
-                        line.description = sourceLine.description;
-                        line.amountCents = sourceLine.amountCents;
-                        MerchantRuleEntity rule = dao.findRule("ITEM", sourceLine.normalizedText);
-                        if (rule != null) {
-                            line.potId = rule.potId;
-                            line.category = rule.category;
-                        }
-                        long lineId = dao.insertReceiptLine(line);
-                        if (rule == null) {
-                            UnknownItemEntity unknown = new UnknownItemEntity();
-                            unknown.receiptLineId = lineId;
-                            unknown.normalizedText = sourceLine.normalizedText;
-                            unknown.displayText = sourceLine.description;
-                            unknown.amountCents = sourceLine.amountCents;
-                            unknown.createdAt = now;
-                            dao.insertUnknownItem(unknown);
-                        }
-                    }
-                    runOnUiThread(() -> {
-                        toast("Bon opgeslagen. Onbekende regels staan bij Import & leren.");
-                        renderImport();
-                    });
-                }))
-                .setNegativeButton("Annuleren", null)
-                .show();
+
+        @JavascriptInterface
+        public void savePot(String json) {
+            try {
+                JSONObject o = new JSONObject(json);
+                long id = o.optLong("id", 0L);
+                PotEntity pot = id > 0 ? findPot(id) : new PotEntity();
+                if (pot == null) pot = new PotEntity();
+                pot.name = o.optString("name", "").trim();
+                pot.budgetCents = Math.max(0L, o.optLong("budgetCents", 0L));
+                pot.periodType = o.optString("periodType", BudgetPeriods.MONTH);
+                pot.active = o.optBoolean("active", true);
+                pot.hiddenFromOverview = o.optBoolean("hiddenFromOverview", false);
+                pot.sortOrder = o.optInt("sortOrder", 0);
+                if (id > 0 && pot.id > 0) dao.updatePot(pot); else dao.insertPot(pot);
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void deletePot(long id) {
+            PotEntity pot = findPot(id);
+            if (pot == null) return;
+            dao.clearTransactionPot(id);
+            dao.clearReceiptLinePot(id);
+            dao.clearRulePot(id);
+            dao.deletePot(pot);
+        }
+
+        @JavascriptInterface
+        public void saveTransaction(String json) {
+            try {
+                JSONObject o = new JSONObject(json);
+                long id = o.optLong("id", 0L);
+                TransactionEntity tx = id > 0 ? dao.getTransaction(id) : new TransactionEntity();
+                if (tx == null) tx = new TransactionEntity();
+                long time = o.optLong("occurredAt", System.currentTimeMillis());
+                tx.source = o.optString("source", id > 0 ? tx.source : "MANUAL");
+                tx.importedAt = id > 0 && tx.importedAt > 0 ? tx.importedAt : System.currentTimeMillis();
+                tx.occurredAt = time;
+                tx.amountCents = o.optLong("amountCents", 0L);
+                tx.merchant = o.optString("merchant", "");
+                tx.description = o.optString("description", "");
+                tx.category = o.optString("category", "");
+                tx.potId = nullableLong(o, "potId");
+                tx.cardReference = o.optString("cardReference", tx.cardReference == null ? "" : tx.cardReference);
+                tx.bankReference = o.optString("bankReference", tx.bankReference == null ? "" : tx.bankReference);
+                tx.dateText = new SimpleDateFormat("dd-MM-yyyy", Locale.ROOT).format(new Date(time));
+                tx.timeText = new SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date(time));
+                tx.affectsBalance = o.optBoolean("affectsBalance", true);
+                tx.excludeFromPots = o.optBoolean("excludeFromPots", false);
+                if (id <= 0 || tx.dedupeKey == null || tx.dedupeKey.isEmpty()) tx.dedupeKey = hash("MANUAL|" + time + "|" + tx.amountCents + "|" + System.nanoTime());
+                if (id > 0 && tx.id > 0) dao.updateTransaction(tx); else dao.insertTransaction(tx);
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void deleteTransaction(long id) {
+            TransactionEntity tx = dao.getTransaction(id);
+            if (tx == null) return;
+            dao.deleteUnknownForTransaction(id);
+            dao.deleteReceiptLinesForTransaction(id);
+            dao.deleteTransaction(tx);
+        }
+
+        @JavascriptInterface
+        public void saveFixedCost(String json) {
+            try {
+                JSONObject o = new JSONObject(json);
+                long id = o.optLong("id", 0L);
+                FixedCostEntity cost = id > 0 ? findFixed(id) : new FixedCostEntity();
+                if (cost == null) cost = new FixedCostEntity();
+                cost.name = o.optString("name", "").trim();
+                cost.amountCents = Math.max(0L, o.optLong("amountCents", 0L));
+                cost.periodType = o.optString("periodType", BudgetPeriods.MONTH);
+                cost.dueDay = Math.max(1, Math.min(31, o.optInt("dueDay", 1)));
+                cost.active = o.optBoolean("active", true);
+                cost.annualLevy = o.optBoolean("annualLevy", false);
+                if (id > 0 && cost.id > 0) dao.updateFixedCost(cost); else dao.insertFixedCost(cost);
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void deleteFixedCost(long id) {
+            FixedCostEntity cost = findFixed(id);
+            if (cost != null) dao.deleteFixedCost(cost);
+        }
+
+        @JavascriptInterface
+        public void saveGoal(String json) {
+            try {
+                JSONObject o = new JSONObject(json);
+                SavingsGoalEntity goal = dao.getActiveSavingsGoal();
+                if (goal == null) goal = new SavingsGoalEntity();
+                goal.name = o.optString("name", "Spaardoel");
+                goal.currentCents = Math.max(0L, o.optLong("currentCents", 0L));
+                goal.targetCents = Math.max(1L, o.optLong("targetCents", 3_000_000L));
+                goal.active = true;
+                if (goal.id > 0) dao.updateSavingsGoal(goal); else dao.insertSavingsGoal(goal);
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void assignUnknown(long id, String category, long potId) {
+            UnknownItemEntity item = dao.getUnknownItem(id);
+            if (item == null) return;
+            Long selectedPot = potId > 0 ? potId : null;
+            if (item.receiptLineId > 0) {
+                ReceiptLineEntity line = dao.getReceiptLine(item.receiptLineId);
+                if (line != null) {
+                    line.category = category;
+                    line.potId = selectedPot;
+                    dao.updateReceiptLine(line);
+                    saveRule("ITEM", item.normalizedText, category, selectedPot);
+                }
+            } else {
+                long signed = -Math.abs(item.amountCents);
+                TransactionEntity tx = dao.findNotificationForUnknown(signed, item.createdAt - 10 * 60_000L, item.createdAt + 10 * 60_000L, item.createdAt);
+                if (tx != null) {
+                    tx.category = category;
+                    tx.potId = selectedPot;
+                    dao.updateTransaction(tx);
+                }
+                saveRule("MERCHANT", item.normalizedText, category, selectedPot);
+            }
+            dao.deleteUnknownItem(item);
+        }
+
+        @JavascriptInterface
+        public String getReceiptLines(long transactionId) {
+            try {
+                JSONArray a = new JSONArray();
+                for (ReceiptLineEntity line : dao.getReceiptLines(transactionId)) {
+                    JSONObject o = new JSONObject();
+                    o.put("id", line.id);
+                    o.put("transactionId", line.transactionId);
+                    o.put("description", line.description);
+                    o.put("amountCents", line.amountCents);
+                    if (line.potId == null) o.put("potId", JSONObject.NULL); else o.put("potId", line.potId);
+                    o.put("category", line.category);
+                    a.put(o);
+                }
+                return a.toString();
+            } catch (Exception e) {
+                return "[]";
+            }
+        }
+
+        @JavascriptInterface
+        public void saveReceiptLine(String json) {
+            try {
+                JSONObject o = new JSONObject(json);
+                ReceiptLineEntity line = dao.getReceiptLine(o.optLong("id", 0L));
+                if (line == null) return;
+                line.category = o.optString("category", "");
+                line.potId = nullableLong(o, "potId");
+                dao.updateReceiptLine(line);
+                if (o.optBoolean("learn", true)) saveRule("ITEM", Normalizer.key(line.description), line.category, line.potId);
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void pickPdf() {
+            runOnUiThread(() -> {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.setType("application/pdf");
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                pdfLauncher.launch(intent);
+            });
+        }
+
+        @JavascriptInterface
+        public void scanReceipt() {
+            runOnUiThread(() -> receiptLauncher.launch(new Intent(MainActivity.this, ReceiptScanActivity.class)));
+        }
+
+        @JavascriptInterface
+        public void openNotificationSettings() {
+            runOnUiThread(() -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
+        }
+
+        @JavascriptInterface
+        public void finishApp() {
+            runOnUiThread(MainActivity.this::finish);
+        }
     }
 
     private void importPdf(Uri uri) {
-        title.setText("PDF wordt lokaal gelezen…");
-        toast("PDF import gestart");
         PdfStatementImporter.importPdf(this, uri, new PdfStatementImporter.Callback() {
             @Override
-            public void onSuccess(nl.milton.budgetapp.importers.BankStatementParser.ParsedStatement statement, String rawText) {
+            public void onSuccess(BankStatementParser.ParsedStatement statement, String rawText) {
                 io.execute(() -> {
-                    ImportCoordinator.ImportSummary summary = ImportCoordinator.importStatement(MainActivity.this, statement);
-                    runOnUiThread(() -> {
-                        title.setText("Import & leren");
-                        String balance;
-                        if (!summary.balanceChecked) balance = "Saldo niet controleerbaar: begin- en/of eindsaldo niet herkend.";
-                        else if (summary.balanceValid) balance = "Saldocontrole klopt.";
-                        else balance = "WAARSCHUWING: begin + unieke PDF-mutaties komt niet uit op het eindsaldo.";
-                        new AlertDialog.Builder(MainActivity.this)
-                                .setTitle("PDF import gereed")
-                                .setMessage("Nieuw: " + summary.added
-                                        + "\nOvergeslagen/dubbel: " + summary.skipped
-                                        + "\nStrikte notificatiematches: " + summary.matchedNotifications
-                                        + "\nBonmatches: " + summary.matchedReceipts
-                                        + "\n\n" + balance)
-                                .setPositiveButton("OK", (d, w) -> renderTransactions())
-                                .show();
-                    });
+                    try {
+                        ImportCoordinator.ImportSummary summary = ImportCoordinator.importStatement(MainActivity.this, statement);
+                        JSONObject o = new JSONObject();
+                        o.put("added", summary.added);
+                        o.put("skipped", summary.skipped);
+                        o.put("matchedNotifications", summary.matchedNotifications);
+                        o.put("matchedReceipts", summary.matchedReceipts);
+                        o.put("balanceChecked", summary.balanceChecked);
+                        o.put("balanceValid", summary.balanceValid);
+                        callJs("onPdfImport", o.toString());
+                    } catch (Exception e) {
+                        callJsError("onPdfError", e.getMessage() == null ? "PDF kon niet worden verwerkt." : e.getMessage());
+                    }
                 });
             }
 
             @Override
             public void onError(Exception error) {
-                runOnUiThread(() -> {
-                    title.setText("Import & leren");
-                    toast("PDF import mislukt: " + error.getMessage());
-                });
+                callJsError("onPdfError", error.getMessage() == null ? "PDF kon niet worden gelezen." : error.getMessage());
             }
         });
     }
 
-    @Override
-    @Deprecated
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_PDF && resultCode == RESULT_OK && data != null && data.getData() != null) importPdf(data.getData());
-        else if (requestCode == REQ_RECEIPT) {
-            if (resultCode == RESULT_OK && data != null) {
-                String text = data.getStringExtra("receipt_text");
-                importReceiptText(text == null ? "" : text);
-            } else if (data != null && data.hasExtra("error")) toast(data.getStringExtra("error"));
-        }
+    private void processReceipt(String rawText) {
+        io.execute(() -> {
+            try {
+                ReceiptParser.ParsedReceipt receipt = ReceiptParser.parse(rawText);
+                if (receipt.totalCents <= 0) throw new IllegalArgumentException("Geen totaalbedrag op de bon gevonden.");
+                String dedupe = hash("RECEIPT|" + Normalizer.key(rawText));
+                TransactionEntity duplicate = dao.findByDedupeKey(dedupe);
+                if (duplicate != null) {
+                    JSONObject result = new JSONObject();
+                    result.put("merchant", duplicate.merchant);
+                    result.put("totalCents", Math.abs(duplicate.amountCents));
+                    result.put("lines", dao.getReceiptLines(duplicate.matchedBankTransactionId != null ? duplicate.matchedBankTransactionId : duplicate.id).size());
+                    result.put("duplicate", true);
+                    callJs("onReceiptImport", result.toString());
+                    return;
+                }
+
+                long timestamp = System.currentTimeMillis();
+                long[] bounds = dayBounds(timestamp);
+                TransactionEntity bankMatch = null;
+                for (TransactionEntity candidate : dao.findBankCandidatesForReceipt(-receipt.totalCents, bounds[0], bounds[1], timestamp)) {
+                    if (merchantCompatible(receipt.merchant, candidate.merchant)) {
+                        bankMatch = candidate;
+                        break;
+                    }
+                }
+
+                TransactionEntity receiptTx = new TransactionEntity();
+                receiptTx.source = "RECEIPT";
+                receiptTx.importedAt = timestamp;
+                receiptTx.occurredAt = timestamp;
+                receiptTx.amountCents = -receipt.totalCents;
+                receiptTx.merchant = receipt.merchant;
+                receiptTx.description = "Bon";
+                receiptTx.dateText = new SimpleDateFormat("dd-MM-yyyy", Locale.ROOT).format(new Date(timestamp));
+                receiptTx.timeText = new SimpleDateFormat("HH:mm", Locale.ROOT).format(new Date(timestamp));
+                receiptTx.dedupeKey = dedupe;
+                receiptTx.affectsBalance = bankMatch == null;
+                if (bankMatch != null) receiptTx.matchedBankTransactionId = bankMatch.id;
+
+                MerchantRuleEntity merchantRule = dao.findRule("MERCHANT", Normalizer.key(receipt.merchant));
+                if (receipt.lines.isEmpty() && merchantRule != null) {
+                    receiptTx.category = merchantRule.category;
+                    receiptTx.potId = merchantRule.potId;
+                }
+
+                long receiptId = dao.insertTransaction(receiptTx);
+                if (receiptId <= 0) throw new IllegalStateException("Bon kon niet worden opgeslagen.");
+                long targetId = bankMatch == null ? receiptId : bankMatch.id;
+
+                int unknownCount = 0;
+                for (ReceiptParser.ParsedLine parsed : receipt.lines) {
+                    ReceiptLineEntity line = new ReceiptLineEntity();
+                    line.transactionId = targetId;
+                    line.description = parsed.description;
+                    line.amountCents = parsed.amountCents;
+                    MerchantRuleEntity rule = dao.findRule("ITEM", parsed.normalizedText);
+                    if (rule != null) {
+                        line.category = rule.category;
+                        line.potId = rule.potId;
+                    }
+                    long lineId = dao.insertReceiptLine(line);
+                    if (rule == null) {
+                        UnknownItemEntity unknown = new UnknownItemEntity();
+                        unknown.receiptLineId = lineId;
+                        unknown.normalizedText = parsed.normalizedText;
+                        unknown.displayText = parsed.description;
+                        unknown.amountCents = parsed.amountCents;
+                        unknown.createdAt = timestamp;
+                        dao.insertUnknownItem(unknown);
+                        unknownCount++;
+                    }
+                }
+
+                JSONObject result = new JSONObject();
+                result.put("merchant", receipt.merchant);
+                result.put("totalCents", receipt.totalCents);
+                result.put("lines", receipt.lines.size());
+                result.put("unknown", unknownCount);
+                result.put("matchedBank", bankMatch != null);
+                callJs("onReceiptImport", result.toString());
+            } catch (Exception e) {
+                callJsError("onReceiptError", e.getMessage() == null ? "Bon kon niet worden verwerkt." : e.getMessage());
+            }
+        });
     }
 
-    private void refreshCurrent() {
-        switch (currentScreen) {
-            case "pots": renderPots(); break;
-            case "transactions": renderTransactions(); break;
-            case "import": renderImport(); break;
-            case "settings": renderSettings(); break;
-            default: renderDashboard(); break;
-        }
+    private JSONObject transactionJson(TransactionEntity tx) throws Exception {
+        JSONObject o = new JSONObject();
+        o.put("id", tx.id);
+        o.put("source", tx.source);
+        o.put("importedAt", tx.importedAt);
+        o.put("occurredAt", tx.occurredAt);
+        o.put("amountCents", tx.amountCents);
+        o.put("merchant", tx.merchant);
+        o.put("description", tx.description);
+        o.put("category", tx.category);
+        if (tx.potId == null) o.put("potId", JSONObject.NULL); else o.put("potId", tx.potId);
+        o.put("cardReference", tx.cardReference);
+        o.put("bankReference", tx.bankReference);
+        o.put("dateText", tx.dateText);
+        o.put("timeText", tx.timeText);
+        o.put("dedupeKey", tx.dedupeKey);
+        o.put("affectsBalance", tx.affectsBalance);
+        o.put("excludeFromPots", tx.excludeFromPots);
+        if (tx.matchedBankTransactionId == null) o.put("matchedBankTransactionId", JSONObject.NULL); else o.put("matchedBankTransactionId", tx.matchedBankTransactionId);
+        if (tx.balanceAfterCents == null) o.put("balanceAfterCents", JSONObject.NULL); else o.put("balanceAfterCents", tx.balanceAfterCents);
+        return o;
     }
 
-    private void showLoading() {
-        content.removeAllViews();
-        TextView loading = text("Laden…", 15, MUTED, false);
-        loading.setPadding(dp(8), dp(20), dp(8), dp(20));
-        content.addView(loading);
+    private PotEntity findPot(long id) {
+        for (PotEntity pot : dao.getAllPots()) if (pot.id == id) return pot;
+        return null;
     }
 
-    private TextView section(String value) {
-        TextView tv = text(value, 16, TEXT, true);
-        tv.setPadding(dp(2), dp(14), dp(2), dp(8));
-        return tv;
+    private FixedCostEntity findFixed(long id) {
+        for (FixedCostEntity cost : dao.getFixedCosts()) if (cost.id == id) return cost;
+        return null;
     }
 
-    private TextView card(String main, String sub) {
-        TextView tv = text(main + (sub == null || sub.isEmpty() ? "" : "\n" + sub), 15, TEXT, false);
-        tv.setLineSpacing(0, 1.12f);
-        tv.setPadding(dp(14), dp(12), dp(14), dp(12));
-        tv.setBackgroundColor(PANEL);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 0, 0, dp(8));
-        tv.setLayoutParams(lp);
-        return tv;
+    private void saveRule(String type, String text, String category, Long potId) {
+        if (text == null || text.trim().isEmpty()) return;
+        MerchantRuleEntity rule = dao.findRule(type, text);
+        if (rule == null) rule = new MerchantRuleEntity();
+        rule.matchType = type;
+        rule.matchText = text;
+        rule.category = category == null ? "" : category;
+        rule.potId = potId;
+        dao.upsertRule(rule);
     }
 
-    private Button actionButton(String label, View.OnClickListener listener) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextColor(Color.BLACK);
-        b.setBackgroundColor(ACCENT);
-        b.setOnClickListener(listener);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, 0, 0, dp(10));
-        b.setLayoutParams(lp);
-        return b;
+    private Long nullableLong(JSONObject o, String key) {
+        if (!o.has(key) || o.isNull(key)) return null;
+        long value = o.optLong(key, 0L);
+        return value > 0 ? value : null;
     }
 
-    private LinearLayout dialogForm() {
-        LinearLayout form = new LinearLayout(this);
-        form.setOrientation(LinearLayout.VERTICAL);
-        form.setPadding(dp(2), dp(2), dp(2), dp(2));
-        return form;
+    private boolean merchantCompatible(String a, String b) {
+        String na = Normalizer.key(a);
+        String nb = Normalizer.key(b);
+        if (na.isEmpty() || nb.isEmpty()) return true;
+        return na.equals(nb) || na.contains(nb) || nb.contains(na);
     }
 
-    private View wrapDialog(View view) {
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout holder = new LinearLayout(this);
-        holder.setOrientation(LinearLayout.VERTICAL);
-        holder.setPadding(dp(20), dp(8), dp(20), dp(8));
-        holder.addView(view);
-        scroll.addView(holder);
-        return scroll;
+    private long[] dayBounds(long timeMs) {
+        Calendar c = Calendar.getInstance();
+        c.setTimeInMillis(timeMs);
+        c.set(Calendar.HOUR_OF_DAY, 0);
+        c.set(Calendar.MINUTE, 0);
+        c.set(Calendar.SECOND, 0);
+        c.set(Calendar.MILLISECOND, 0);
+        long start = c.getTimeInMillis();
+        c.add(Calendar.DAY_OF_MONTH, 1);
+        return new long[]{start, c.getTimeInMillis() - 1};
     }
 
-    private EditText field(String hint, String value) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setText(value == null ? "" : value);
-        e.setTextColor(TEXT);
-        e.setHintTextColor(MUTED);
-        e.setSingleLine(false);
-        return e;
+    private void callJs(String function, String json) {
+        runOnUiThread(() -> {
+            if (webView != null) webView.evaluateJavascript("window.BudgetAppNative&&window.BudgetAppNative." + function + "(" + JSONObject.quote(json) + ")", null);
+        });
     }
 
-    private EditText moneyField(String hint, String value) {
-        EditText e = field(hint, value);
-        e.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
-        e.setSingleLine(true);
-        return e;
-    }
-
-    private CheckBox check(String label, boolean checked) {
-        CheckBox box = new CheckBox(this);
-        box.setText(label);
-        box.setTextColor(TEXT);
-        box.setChecked(checked);
-        return box;
-    }
-
-    private TextView label(String value) {
-        TextView tv = text(value, 12, MUTED, false);
-        tv.setPadding(0, dp(8), 0, dp(2));
-        return tv;
-    }
-
-    private Spinner periodSpinner(String selectedCode) {
-        String[] labels = {"Week", "Salarisperiode 23e–22e", "Maand", "Jaar", "Eenmalig"};
-        Spinner spinner = new Spinner(this);
-        spinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(periodIndex(selectedCode));
-        return spinner;
-    }
-
-    private int periodIndex(String code) {
-        if (BudgetPeriods.WEEK.equals(code)) return 0;
-        if (BudgetPeriods.SALARY_PERIOD.equals(code)) return 1;
-        if (BudgetPeriods.YEAR.equals(code)) return 3;
-        if (BudgetPeriods.ONE_TIME.equals(code)) return 4;
-        return 2;
-    }
-
-    private String periodCode(int index) {
-        switch (index) {
-            case 0: return BudgetPeriods.WEEK;
-            case 1: return BudgetPeriods.SALARY_PERIOD;
-            case 3: return BudgetPeriods.YEAR;
-            case 4: return BudgetPeriods.ONE_TIME;
-            default: return BudgetPeriods.MONTH;
-        }
-    }
-
-    private Spinner potSpinner(List<PotEntity> pots, Long selectedId) {
-        List<String> labels = new ArrayList<>();
-        labels.add("Geen potje");
-        int selected = 0;
-        for (int i = 0; i < pots.size(); i++) {
-            labels.add(pots.get(i).name);
-            if (selectedId != null && pots.get(i).id == selectedId.longValue()) selected = i + 1;
-        }
-        Spinner spinner = new Spinner(this);
-        spinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
-        spinner.setSelection(selected);
-        return spinner;
-    }
-
-    private Long selectedPotId(List<PotEntity> pots, int position) {
-        if (position <= 0 || position > pots.size()) return null;
-        return pots.get(position - 1).id;
-    }
-
-    private void addDetail(LinearLayout parent, String key, String value) {
-        if (value == null || value.trim().isEmpty()) return;
-        parent.addView(card(key, value));
-    }
-
-    private TextView text(String value, int sp, int color, boolean bold) {
-        TextView tv = new TextView(this);
-        tv.setText(value);
-        tv.setTextSize(sp);
-        tv.setTextColor(color);
-        if (bold) tv.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        return tv;
-    }
-
-    private void toast(String value) {
-        if (value == null || value.isEmpty()) return;
-        Toast.makeText(this, value, Toast.LENGTH_LONG).show();
+    private void callJsError(String function, String message) {
+        runOnUiThread(() -> {
+            if (webView != null) webView.evaluateJavascript("window.BudgetAppNative&&window.BudgetAppNative." + function + "(" + JSONObject.quote(message == null ? "Onbekende fout" : message) + ")", null);
+        });
     }
 
     private static String hash(String value) {
@@ -954,25 +631,6 @@ public class MainActivity extends ComponentActivity {
             return sb.toString();
         } catch (Exception e) {
             return Integer.toHexString(value.hashCode());
-        }
-    }
-
-    @Override
-    protected void onDestroy() {
-        io.shutdown();
-        super.onDestroy();
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
-
-    private static final class PotStatus {
-        final PotEntity pot;
-        final long spent;
-        PotStatus(PotEntity pot, long spent) {
-            this.pot = pot;
-            this.spent = spent;
         }
     }
 }
