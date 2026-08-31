@@ -34,29 +34,52 @@ De visuele basis is het door de gebruiker aangeleverde `Budget — layout protot
 
 Geen generieke vervangende layout gebruiken wanneer deze interface al is afgesproken.
 
-## Potjes
+## Potjes en periodes
 
-Elk potje heeft zelfstandig een periode:
+Elk potje is volledig lokaal bewerkbaar. Minimaal instelbaar:
+- naam;
+- budgetbedrag;
+- periode;
+- actief/inactief;
+- wel of niet zichtbaar op Home.
+
+Ondersteunde periodes:
 - week;
 - salarisperiode;
 - maand;
 - jaar;
 - eenmalig.
 
-De salarisperiode loopt van de 23e tot en met de 22e.
+Periode-instellingen mogen niet hard vaststaan. De salarisperiode start standaard op dag 23 en de weekperiode standaard op maandag, maar beide zijn lokaal aanpasbaar in Instellingen. De salarisperiode loopt steeds van de ingestelde startdag tot de dag vóór dezelfde startdag in de volgende maand. Bij maanden waarin dag 29, 30 of 31 niet bestaat wordt de laatste geldige dag van die maand gebruikt.
 
-Standaardpotjes:
-- Vrije uitgaven: €80 per week;
-- Boodschappen: €180 per salarisperiode;
-- Brandstof: €60 per salarisperiode.
+Wanneer de salarisdag, weekreset, het budgetbedrag of de periode van een potje wijzigt:
+- bestaande transacties blijven behouden;
+- er worden geen transacties opnieuw aangemaakt;
+- actuele verbruiksbedragen en resterende budgetten worden opnieuw berekend op basis van de nieuwe periodegrenzen;
+- bonregels die aan een potje zijn gekoppeld blijven meetellen in dezelfde dynamische periodeberekening.
 
-Potjes moeten lokaal toegevoegd, gewijzigd en verwijderd kunnen worden. Verwijdering mag transacties niet verwijderen; koppelingen naar het verwijderde potje worden losgemaakt.
+Bij een lege installatie zijn dit de standaardonderwerpen/potjes:
+- Vrije uitgaven: startwaarde €80 per week;
+- Boodschappen: startwaarde €180 per salarisperiode;
+- Brandstof: startwaarde €60 per salarisperiode;
+- Elektronica: geen vooraf ingesteld budget;
+- Games / hobby: geen vooraf ingesteld budget;
+- Auto / motor: geen vooraf ingesteld budget;
+- Kleding: geen vooraf ingesteld budget;
+- Huishouden: geen vooraf ingesteld budget;
+- Anders: geen vooraf ingesteld budget.
+
+Alle bovenstaande potjes zijn gewone bewerkbare data. Geen van deze bedragen of perioden mag als harde rekenregel worden gebruikt. De gebruiker kan elk potje wijzigen, verbergen, deactiveren of verwijderen en zelf nieuwe potjes toevoegen.
+
+De standaardpotjes zijn zichtbaar op Home. Als een potje nog geen budgetbedrag heeft, toont Home duidelijk dat het budget nog moet worden ingesteld in plaats van een fictief bedrag te gebruiken.
+
+Verwijdering van een potje mag transacties niet verwijderen; koppelingen naar het verwijderde potje worden losgemaakt. Historische categorie-informatie blijft bruikbaar.
 
 Jaarlijkse heffingen worden apart herkend en niet als zichtbaar potje getoond. Waterheffing is een voorbeeld.
 
 ## Onderwerpen en categorieën
 
-Onderwerpen/categorieën zijn niet beperkt tot de drie standaardpotjes. Minimaal beschikbaar in uitgavecontrole, handmatige transacties, onbekende transacties en lokaal leergeheugen:
+De actuele potjes vormen de primaire dynamische lijst voor uitgavenonderwerpen. Minimaal beschikbaar bij een lege installatie:
 - Boodschappen;
 - Vrije uitgaven;
 - Brandstof;
@@ -65,18 +88,20 @@ Onderwerpen/categorieën zijn niet beperkt tot de drie standaardpotjes. Minimaal
 - Auto / motor;
 - Kleding;
 - Huishouden;
-- Vaste lasten;
-- Inkomen;
 - Anders.
 
-Een onderwerp hoeft geen eigen budgetbedrag te hebben. Budgetcontrole rekent alleen met een werkelijk gekozen bestaand potje en mag geen verzonnen budgetbedragen gebruiken.
+Daarnaast blijven `Vaste lasten` en `Inkomen` beschikbaar als transactiecategorieën zonder dat zij verplicht een budgetpotje zijn.
+
+Als een potje wordt hernoemd, moeten gekoppelde transacties, overzichten, filters, bonregels en leerregels bruikbaar blijven via de potkoppeling. De interface toont voor gekoppelde records de actuele naam van het potje en mag niet afhankelijk zijn van een oude hardcoded categorienaam.
+
+Een potje mag een budget van nul hebben. Dat betekent dat het budget nog niet is ingesteld. Budgetcontrole mag dan geen fictieve ruimte aannemen.
 
 ## Bekende correcties
 
 - Geen maandelijkse stroomkosten als vaste aanname.
 - Pararius is afgezegd en mag niet als actieve vaste last worden vooringevuld.
 - VriendenLoterij is afgezegd en mag niet als actieve vaste last worden vooringevuld.
-- Brandstof is niet €230 per maand; het budget is €60 per salarisperiode.
+- Brandstof is niet €230 per maand; de eerste startwaarde is €60 per salarisperiode en blijft volledig bewerkbaar.
 - Geen andere vaste lasten of bedragen voorinvullen die niet expliciet zijn afgesproken.
 
 ## Spaardoel
@@ -103,11 +128,15 @@ Eisen:
 - handmatige invoer blijft mogelijk;
 - categorie en potje zijn afzonderlijk instelbaar;
 - één daadwerkelijke banktransactie mag het saldo maar één keer beïnvloeden;
-- filters werken op echte opgeslagen transacties, niet op demo-inhoud.
+- filters werken op echte opgeslagen transacties, niet op demo-inhoud;
+- filteren op de huidige salarisperiode gebruikt de actuele ingestelde salarisdag;
+- filteren op week gebruikt de actuele ingestelde weekresetdag.
 
 ## Uitgavecontrole
 
-`Wat wil je uitgeven?` gebruikt uitsluitend actuele lokale gegevens. De gebruiker kiest een onderwerp, bestaand potje en bedrag. De app vergelijkt het bedrag met het werkelijke resterende budget in de huidige periode. Geen hardcoded fictieve bedragen of fictieve spaardoelvertragingen gebruiken.
+`Wat wil je uitgeven?` gebruikt uitsluitend actuele lokale gegevens. De gebruiker kiest een bestaand potje en bedrag. De app vergelijkt het bedrag met het werkelijke resterende budget in de actuele periode van dat potje. Geen hardcoded fictieve bedragen of fictieve spaardoelvertragingen gebruiken.
+
+Als het gekozen potje nog geen budget heeft, meldt de app dat eerst een budget en periode moeten worden ingesteld.
 
 ## Notificaties
 
@@ -141,6 +170,7 @@ Eisen:
 - Bekende items worden via lokaal leergeheugen opnieuw toegewezen.
 - Onbekende items komen in de leerwachtrij.
 - Wanneer een banktransactie later wordt geïmporteerd, verhuizen bonregels naar die banktransactie en telt de oorspronkelijke bontransactie niet meer mee voor saldo.
+- Verbruik van bonregels volgt altijd de actuele periode-instellingen van het gekoppelde potje.
 
 ## Vaste lasten
 
@@ -149,11 +179,21 @@ Eisen:
 - Jaarlijkse heffingen kunnen apart worden gemarkeerd.
 - Geen voorbeeldabonnementen of voorbeeldbedragen opslaan als echte data.
 
+## Instellingen
+
+Minimaal lokaal instelbaar:
+- startdag van de salarisperiode, 1 t/m 31;
+- start/resetdag van de weekperiode, zondag t/m zaterdag.
+
+Instellingen worden lokaal op Android bewaard en zijn geen GitHub- of webafhankelijkheid. Wijzigingen moeten direct doorwerken in Home, Budget, uitgavecontrole, filters en alle periodieke berekeningen.
+
 ## Definition of done
 
 Een onderdeel is niet klaar wanneer alleen het scherm of een toast bestaat. Het is pas klaar wanneer de volledige lokale keten werkt: invoeren of importeren, valideren, opslaan, opnieuw laden, bewerken waar van toepassing en correct doorrekenen in saldo/potjes/overzichten.
 
 Gebruik geen demo-data, nepacties of placeholderfunctionaliteit als vervanging voor afgesproken functionaliteit. Pages mag Android-only functies als niet beschikbaar aanduiden omdat Pages alleen preview is; de lokale Android-implementatie van die functies moet de werkelijke eindimplementatie zijn.
+
+Wijzigingen aan bedragen, namen, perioden of globale periode-instellingen mogen bestaande data niet onbruikbaar maken. Bij iedere structurele wijziging moet worden gecontroleerd of bestaande transacties, bonregels, filters en berekeningen blijven functioneren.
 
 ## Technische baseline
 
