@@ -3,17 +3,18 @@ const DEFAULT_POTS=[
 {name:'Vrije uitgaven',budgetCents:8000,periodType:'WEEK',active:true,hiddenFromOverview:false,sortOrder:0},
 {name:'Boodschappen',budgetCents:18000,periodType:'SALARY_PERIOD',active:true,hiddenFromOverview:false,sortOrder:1},
 {name:'Brandstof',budgetCents:6000,periodType:'SALARY_PERIOD',active:true,hiddenFromOverview:false,sortOrder:2},
-{name:'Elektronica',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:true,sortOrder:3},
-{name:'Games / hobby',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:true,sortOrder:4},
-{name:'Auto / motor',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:true,sortOrder:5},
-{name:'Kleding',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:true,sortOrder:6},
-{name:'Huishouden',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:true,sortOrder:7},
-{name:'Anders',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:true,sortOrder:8}
+{name:'Elektronica',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:false,sortOrder:3},
+{name:'Games / hobby',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:false,sortOrder:4},
+{name:'Auto / motor',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:false,sortOrder:5},
+{name:'Kleding',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:false,sortOrder:6},
+{name:'Huishouden',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:false,sortOrder:7},
+{name:'Anders',budgetCents:0,periodType:'MONTH',active:true,hiddenFromOverview:false,sortOrder:8}
 ];
 const EXTRA_CATEGORIES=['Vaste lasten','Inkomen'];
-const KEY='budgetAppPreviewV4';
-const OLD_KEYS=['budgetAppPreviewV3','budgetAppStateV1'];
-const MIGRATION_KEY='budgetAppSubjectPotsV4';
+const KEY='budgetAppPreviewV5';
+const OLD_KEYS=['budgetAppPreviewV4','budgetAppPreviewV3','budgetAppStateV1'];
+const SUBJECT_MIGRATION_KEY='budgetAppSubjectPotsV4';
+const VISIBILITY_MIGRATION_KEY='budgetAppDefaultVisibilityV5';
 const native=typeof BudgetAppAndroid!=='undefined';
 let state=null;
 let activeScreen='home';
@@ -26,15 +27,19 @@ const num=v=>Math.round((Number(String(v??'').replace(/\./g,'').replace(',','.')
 const uid=()=>Date.now()+Math.floor(Math.random()*1000000);
 const now=()=>Date.now();
 
+function defaultSettings(){
+ return{salaryStartDay:23,weekStartDay:1};
+}
 function seed(){
  return{
-  dataVersion:4,
+  dataVersion:5,
   pots:DEFAULT_POTS.map((p,i)=>({...p,id:i+1})),
   transactions:[],
   fixedCosts:[],
   goal:{id:1,name:'Spaardoel',currentCents:0,targetCents:3000000,active:true},
   unknown:[],
   knownBalanceCents:null,
+  settings:defaultSettings(),
   platform:'preview'
  };
 }
@@ -45,6 +50,11 @@ function normalizeState(s){
  if(!Array.isArray(x.fixedCosts))x.fixedCosts=[];
  if(!Array.isArray(x.unknown))x.unknown=[];
  if(!x.goal)x.goal={id:1,name:'Spaardoel',currentCents:0,targetCents:3000000,active:true};
+ const ds=defaultSettings();
+ x.settings={
+  salaryStartDay:Math.max(1,Math.min(31,Number(x.settings?.salaryStartDay)||ds.salaryStartDay)),
+  weekStartDay:Math.max(0,Math.min(6,Number.isFinite(Number(x.settings?.weekStartDay))?Number(x.settings.weekStartDay):ds.weekStartDay))
+ };
  x.pots=x.pots.map((p,i)=>({
   id:Number(p.id)||uid(),
   name:String(p.name||'').trim(),
@@ -55,6 +65,7 @@ function normalizeState(s){
   sortOrder:Number.isFinite(Number(p.sortOrder))?Number(p.sortOrder):i,
   spentCents:Number.isFinite(Number(p.spentCents))?Number(p.spentCents):undefined
  }));
+ x.dataVersion=5;
  return x;
 }
 function previewLoad(){
@@ -71,30 +82,54 @@ function previewLoad(){
 }
 function previewSave(data=state){
  if(!data)return;
- data.dataVersion=4;
+ data.dataVersion=5;
  localStorage.setItem(KEY,JSON.stringify(data));
 }
 function migrateSubjectPots(s){
- if(localStorage.getItem(MIGRATION_KEY)==='1')return s;
+ if(localStorage.getItem(SUBJECT_MIGRATION_KEY)==='1')return s;
  const existing=new Set(s.pots.map(p=>p.name.trim().toLocaleLowerCase('nl-NL')));
  const missing=DEFAULT_POTS.filter(p=>!existing.has(p.name.toLocaleLowerCase('nl-NL')));
  if(native){
   for(const p of missing)BudgetAppAndroid.savePot(JSON.stringify({...p,id:0}));
-  localStorage.setItem(MIGRATION_KEY,'1');
+  localStorage.setItem(SUBJECT_MIGRATION_KEY,'1');
   try{return normalizeState(JSON.parse(BudgetAppAndroid.getState()))}catch{return s}
  }
  for(const p of missing)s.pots.push({...p,id:uid()});
- localStorage.setItem(MIGRATION_KEY,'1');
+ localStorage.setItem(SUBJECT_MIGRATION_KEY,'1');
  previewSave(s);
  return s;
 }
+function migrateDefaultVisibility(s){
+ if(localStorage.getItem(VISIBILITY_MIGRATION_KEY)==='1')return s;
+ const autoNames=new Set(DEFAULT_POTS.slice(3).map(p=>p.name.toLocaleLowerCase('nl-NL')));
+ const changes=s.pots.filter(p=>autoNames.has(p.name.toLocaleLowerCase('nl-NL'))&&p.hiddenFromOverview&&Number(p.budgetCents)===0);
+ if(native){
+  for(const p of changes)BudgetAppAndroid.savePot(JSON.stringify({...p,hiddenFromOverview:false}));
+  localStorage.setItem(VISIBILITY_MIGRATION_KEY,'1');
+  try{return normalizeState(JSON.parse(BudgetAppAndroid.getState()))}catch{return s}
+ }
+ for(const p of changes)p.hiddenFromOverview=false;
+ localStorage.setItem(VISIBILITY_MIGRATION_KEY,'1');
+ previewSave(s);
+ return s;
+}
+
 const Store={
- load(){if(native){try{return normalizeState(JSON.parse(BudgetAppAndroid.getState()))}catch(e){showToast('Opslagfout',String(e));return seed()}}return previewLoad()},
+ load(){
+  if(native){
+   try{return normalizeState(JSON.parse(BudgetAppAndroid.getState()))}
+   catch(e){showToast('Opslagfout',String(e));return seed()}
+  }
+  return previewLoad();
+ },
  savePot(p){
   if(native){BudgetAppAndroid.savePot(JSON.stringify(p));reload()}
   else{
-   if(p.id){const i=state.pots.findIndex(x=>String(x.id)===String(p.id));if(i>=0)state.pots[i]=p;else{p.id=uid();state.pots.push(p)}}
-   else{p.id=uid();state.pots.push(p)}
+   if(p.id){
+    const i=state.pots.findIndex(x=>String(x.id)===String(p.id));
+    if(i>=0)state.pots[i]=p;
+    else{p.id=uid();state.pots.push(p)}
+   }else{p.id=uid();state.pots.push(p)}
    previewSave();renderAll();
   }
  },
@@ -109,8 +144,11 @@ const Store={
  saveTx(t){
   if(native){BudgetAppAndroid.saveTransaction(JSON.stringify(t));reload()}
   else{
-   if(t.id){const i=state.transactions.findIndex(x=>String(x.id)===String(t.id));if(i>=0)state.transactions[i]=t;else{t.id=uid();state.transactions.push(t)}}
-   else{t.id=uid();state.transactions.push(t)}
+   if(t.id){
+    const i=state.transactions.findIndex(x=>String(x.id)===String(t.id));
+    if(i>=0)state.transactions[i]=t;
+    else{t.id=uid();state.transactions.push(t)}
+   }else{t.id=uid();state.transactions.push(t)}
    previewSave();renderAll();
   }
  },
@@ -121,8 +159,11 @@ const Store={
  saveFixed(f){
   if(native){BudgetAppAndroid.saveFixedCost(JSON.stringify(f));reload()}
   else{
-   if(f.id){const i=state.fixedCosts.findIndex(x=>String(x.id)===String(f.id));if(i>=0)state.fixedCosts[i]=f;else{f.id=uid();state.fixedCosts.push(f)}}
-   else{f.id=uid();state.fixedCosts.push(f)}
+   if(f.id){
+    const i=state.fixedCosts.findIndex(x=>String(x.id)===String(f.id));
+    if(i>=0)state.fixedCosts[i]=f;
+    else{f.id=uid();state.fixedCosts.push(f)}
+   }else{f.id=uid();state.fixedCosts.push(f)}
    previewSave();renderAll();
   }
  },
@@ -133,6 +174,14 @@ const Store={
  saveGoal(g){
   if(native){BudgetAppAndroid.saveGoal(JSON.stringify(g));reload()}
   else{state.goal={...g};previewSave();renderAll()}
+ },
+ saveSettings(settings){
+  const clean={
+   salaryStartDay:Math.max(1,Math.min(31,Number(settings.salaryStartDay)||23)),
+   weekStartDay:Math.max(0,Math.min(6,Number(settings.weekStartDay)||0))
+  };
+  if(native){BudgetAppAndroid.saveSettings(JSON.stringify(clean));reload()}
+  else{state.settings=clean;previewSave();renderAll()}
  },
  assignUnknown(id,category,potId){
   if(native){BudgetAppAndroid.assignUnknown(Number(id),category,potId?Number(potId):0);reload()}
@@ -152,34 +201,56 @@ const Store={
  importPdf(){if(native)BudgetAppAndroid.pickPdf();else showToast('Alleen op Android','PDF import gebruikt lokale Android PDF-rendering en OCR.')},
  notificationSettings(){if(native)BudgetAppAndroid.openNotificationSettings();else showToast('Alleen op Android','Rabobank- en Wallet-notificaties worden lokaal op Android verwerkt.')}
 };
-function loadState(){state=migrateSubjectPots(Store.load())}
+
+function loadState(){
+ state=migrateSubjectPots(Store.load());
+ state=migrateDefaultVisibility(state);
+}
 function reload(){loadState();renderAll()}
 
+function clampedDate(year,month,day){
+ const last=new Date(year,month+1,0).getDate();
+ return new Date(year,month,Math.min(Math.max(1,day),last));
+}
 function range(period,time=now()){
- const d=new Date(time),s=new Date(d),e=new Date(d);
- s.setHours(0,0,0,0);e.setHours(23,59,59,999);
+ const d=new Date(time);
+ const settings=state?.settings||defaultSettings();
+ if(period==='ONCE')return[0,Number.MAX_SAFE_INTEGER];
  if(period==='WEEK'){
-  const n=(s.getDay()+6)%7;s.setDate(s.getDate()-n);e.setTime(s.getTime());e.setDate(e.getDate()+6);e.setHours(23,59,59,999);
- }else if(period==='SALARY_PERIOD'){
-  if(s.getDate()>=23){s.setDate(23);e.setFullYear(s.getFullYear(),s.getMonth()+1,22)}
-  else{e.setDate(22);s.setFullYear(s.getFullYear(),s.getMonth()-1,23)}
-  e.setHours(23,59,59,999);
- }else if(period==='YEAR'){
-  s.setMonth(0,1);e.setMonth(11,31);
- }else if(period==='ONCE')return[0,Number.MAX_SAFE_INTEGER];
- else{
-  s.setDate(1);e.setFullYear(s.getFullYear(),s.getMonth()+1,0);e.setHours(23,59,59,999);
+  const s=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  const delta=(7+s.getDay()-settings.weekStartDay)%7;
+  s.setDate(s.getDate()-delta);
+  const e=new Date(s);e.setDate(e.getDate()+7);e.setMilliseconds(e.getMilliseconds()-1);
+  return[s.getTime(),e.getTime()];
  }
+ if(period==='SALARY_PERIOD'){
+  const today=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  let start=clampedDate(d.getFullYear(),d.getMonth(),settings.salaryStartDay);
+  if(today.getTime()<start.getTime())start=clampedDate(d.getFullYear(),d.getMonth()-1,settings.salaryStartDay);
+  const next=clampedDate(start.getFullYear(),start.getMonth()+1,settings.salaryStartDay);
+  return[start.getTime(),next.getTime()-1];
+ }
+ const s=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+ s.setHours(0,0,0,0);
+ if(period==='YEAR'){
+  s.setMonth(0,1);
+  const e=new Date(s);e.setFullYear(e.getFullYear()+1);e.setMilliseconds(e.getMilliseconds()-1);
+  return[s.getTime(),e.getTime()];
+ }
+ s.setDate(1);
+ const e=new Date(s);e.setMonth(e.getMonth()+1);e.setMilliseconds(e.getMilliseconds()-1);
  return[s.getTime(),e.getTime()];
 }
 function salaryInfo(){
  const[a,b]=range('SALARY_PERIOD'),s=new Date(a),e=new Date(b),today=new Date();
- const days=Math.max(0,Math.ceil((new Date(e.getFullYear(),e.getMonth(),e.getDate())-new Date(today.getFullYear(),today.getMonth(),today.getDate()))/86400000));
+ const endDay=new Date(e.getFullYear(),e.getMonth(),e.getDate());
+ const currentDay=new Date(today.getFullYear(),today.getMonth(),today.getDate());
+ const days=Math.max(0,Math.round((endDay-currentDay)/86400000));
  const short=d=>d.toLocaleDateString('nl-NL',{day:'numeric',month:'short'}).replace('.','');
  return{range:`${short(s)} – ${short(e)}`,remain:days===0?'laatste dag':`nog ${days} dag${days===1?'':'en'}`};
 }
 function potSpent(p){
- if(Number.isFinite(Number(p.spentCents)))return Number(p.spentCents);
+ if(native&&Number.isFinite(Number(p.spentCents)))return Number(p.spentCents);
  const[a,b]=range(p.periodType);
  return state.transactions.filter(t=>String(t.potId)===String(p.id)&&!t.excludeFromPots&&t.amountCents<0&&t.occurredAt>=a&&t.occurredAt<=b).reduce((n,t)=>n+Math.abs(t.amountCents),0);
 }
@@ -203,8 +274,11 @@ function initials(name){
  return(s.length?s.slice(0,2).map(x=>x[0]).join(''):'?').toUpperCase();
 }
 function potById(id){return state.pots.find(p=>String(p.id)===String(id))}
+function displayCategory(t){return potById(t?.potId)?.name||t?.category||''}
 function categoryNames(selected=''){
- const names=[...state.pots.map(p=>p.name.trim()).filter(Boolean),...EXTRA_CATEGORIES];
+ const potNames=state.pots.map(p=>p.name.trim()).filter(Boolean);
+ const historic=state.transactions.filter(t=>!t.potId&&t.category).map(t=>t.category);
+ const names=[...potNames,...historic,...EXTRA_CATEGORIES];
  if(selected&&!names.includes(selected))names.push(selected);
  return[...new Set(names)];
 }
@@ -214,17 +288,20 @@ function potOptions(selected=null,allowNone=true){
  return`${allowNone?'<option value="">Geen potje</option>':''}${options}`;
 }
 function periodOptions(selected){return PERIODS.map(([v,n])=>`<option value="${v}" ${v===selected?'selected':''}>${n}</option>`).join('')}
+function weekdayOptions(selected){
+ return[['0','Zondag'],['1','Maandag'],['2','Dinsdag'],['3','Woensdag'],['4','Donderdag'],['5','Vrijdag'],['6','Zaterdag']].map(([v,n])=>`<option value="${v}" ${Number(v)===Number(selected)?'selected':''}>${n}</option>`).join('');
+}
 function txRow(t){
- const name=t.merchant||t.description||'Transactie',unknown=!t.category&&t.amountCents<0;
- return`<div class="tx ${unknown?'unknown':''}" onclick="openTxDetail(${t.id})"><div class="txicon">${esc(initials(name))}</div><div><div class="txname">${esc(name)}</div><div class="txsub">${dateLabel(t.occurredAt)}${t.category?` · ${esc(t.category)}`:' · Nog indelen'}</div></div><div class="txamt ${t.amountCents>=0?'pos':'neg'}">${fmt(t.amountCents)}</div></div>`;
+ const name=t.merchant||t.description||'Transactie',category=displayCategory(t),unknown=!category&&t.amountCents<0;
+ return`<div class="tx ${unknown?'unknown':''}" onclick="openTxDetail(${t.id})"><div class="txicon">${esc(initials(name))}</div><div><div class="txname">${esc(name)}</div><div class="txsub">${dateLabel(t.occurredAt)}${category?` · ${esc(category)}`:' · Nog indelen'}</div></div><div class="txamt ${t.amountCents>=0?'pos':'neg'}">${fmt(t.amountCents)}</div></div>`;
 }
 function potCard(p,i,si){
  const spent=potSpent(p);
  if(p.budgetCents<=0){
-  return`<div class="card pot ${i>=2?'wide':''}" onclick="openPot(${p.id})"><div><div class="potname">${esc(p.name)} <span class="period">${periodLabel(p.periodType)}</span></div><div class="left">Budget instellen</div></div><div><div class="meta">${spent>0?`${fmt(spent)} geregistreerd · `:''}Tik om bedrag en periode in te stellen</div><div class="meter"><span style="width:0%"></span></div>${p.periodType==='SALARY_PERIOD'?`<div class="salaryperiod"><span>${si.range}</span><strong>${si.remain}</strong></div>`:''}</div></div>`;
+  return`<div class="card pot ${i===2?'wide':''}" onclick="openPot(${p.id})"><div><div class="potname">${esc(p.name)} <span class="period">${periodLabel(p.periodType)}</span></div><div class="left">Budget instellen</div></div><div><div class="meta">${spent>0?`${fmt(spent)} geregistreerd · `:''}Tik om bedrag en periode in te stellen</div><div class="meter"><span style="width:0%"></span></div>${p.periodType==='SALARY_PERIOD'?`<div class="salaryperiod"><span>${si.range}</span><strong>${si.remain}</strong></div>`:''}</div></div>`;
  }
  const remain=p.budgetCents-spent,pc=Math.min(100,spent/p.budgetCents*100);
- return`<div class="card pot ${i>=2?'wide':''}" onclick="openPot(${p.id})"><div><div class="potname">${esc(p.name)} <span class="period">${periodLabel(p.periodType)}</span></div><div class="left ${remain<0?'neg':''}">${fmt(remain)}</div></div><div><div class="meta">${fmt(spent)} van ${fmt(p.budgetCents)} gebruikt${remain<0?' · budget overschreden':''}</div><div class="meter"><span style="width:${pc}%;${remain<0?'background:var(--red)':''}"></span></div>${p.periodType==='SALARY_PERIOD'?`<div class="salaryperiod"><span>${si.range}</span><strong>${si.remain}</strong></div>`:''}</div></div>`;
+ return`<div class="card pot ${i===2?'wide':''}" onclick="openPot(${p.id})"><div><div class="potname">${esc(p.name)} <span class="period">${periodLabel(p.periodType)}</span></div><div class="left ${remain<0?'neg':''}">${fmt(remain)}</div></div><div><div class="meta">${fmt(spent)} van ${fmt(p.budgetCents)} gebruikt${remain<0?' · budget overschreden':''}</div><div class="meter"><span style="width:${pc}%;${remain<0?'background:var(--red)':''}"></span></div>${p.periodType==='SALARY_PERIOD'?`<div class="salaryperiod"><span>${si.range}</span><strong>${si.remain}</strong></div>`:''}</div></div>`;
 }
 function renderHome(){
  const e=document.getElementById('home'),m=monthStats(),si=salaryInfo(),g=state.goal||{currentCents:0,targetCents:3000000,name:'Spaardoel'};
@@ -238,12 +315,12 @@ function renderBudgets(){
  const e=document.getElementById('budgets'),si=salaryInfo();
  const pots=[...state.pots].sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
  const costs=[...state.fixedCosts].sort((a,b)=>a.name.localeCompare(b.name));
- e.innerHTML=`<div class="head"><div class="title">Budgetten & potjes</div><button class="link" onclick="openPot()">Nieuw potje</button></div><div class="periodbanner"><span>Huidige salarisperiode</span><strong>${si.range} · ${si.remain}</strong></div><div class="card list">${pots.length?pots.map(p=>`<div class="setrow" onclick="openPot(${p.id})"><div><strong>${esc(p.name)}</strong><small>${p.budgetCents>0?`${fmt(p.budgetCents)} ${periodLong(p.periodType).toLowerCase()}`:`Nog geen budget · ${periodLong(p.periodType).toLowerCase()}`}${p.active?'':' · inactief'}${p.hiddenFromOverview?' · niet op Home':''}</small></div><div class="value">${p.budgetCents>0?fmt(p.budgetCents):'Instellen'}</div></div>`).join(''):'<div class="empty">Nog geen potjes.</div>'}</div><div class="head"><div class="title">Vaste lasten</div><button class="link" onclick="openFixed()">Toevoegen</button></div><div class="card list">${costs.length?costs.map(f=>`<div class="setrow" onclick="openFixed(${f.id})"><div><strong>${esc(f.name)}</strong><small>${periodLong(f.periodType)}${f.annualLevy?' · jaarlijkse heffing':''}${f.active?'':' · inactief'}</small></div><div class="value">${fmt(f.amountCents)}</div></div>`).join(''):'<div class="empty">Nog geen vaste lasten ingevoerd.</div>'}</div>`;
+ e.innerHTML=`<div class="head"><div class="title">Budgetten & potjes</div><button class="link" onclick="openPot()">Nieuw potje</button></div><div class="periodbanner" onclick="openSettings()"><span>Huidige salarisperiode · tik om aan te passen</span><strong>${si.range} · ${si.remain}</strong></div><div class="card list">${pots.length?pots.map(p=>`<div class="setrow" onclick="openPot(${p.id})"><div><strong>${esc(p.name)}</strong><small>${p.budgetCents>0?`${fmt(p.budgetCents)} ${periodLong(p.periodType).toLowerCase()}`:`Nog geen budget · ${periodLong(p.periodType).toLowerCase()}`}${p.active?'':' · inactief'}${p.hiddenFromOverview?' · niet op Home':''}</small></div><div class="value">${p.budgetCents>0?fmt(p.budgetCents):'Instellen'}</div></div>`).join(''):'<div class="empty">Nog geen potjes.</div>'}</div><div class="head"><div class="title">Vaste lasten</div><button class="link" onclick="openFixed()">Toevoegen</button></div><div class="card list">${costs.length?costs.map(f=>`<div class="setrow" onclick="openFixed(${f.id})"><div><strong>${esc(f.name)}</strong><small>${periodLong(f.periodType)}${f.annualLevy?' · jaarlijkse heffing':''}${f.active?'':' · inactief'}</small></div><div class="value">${fmt(f.amountCents)}</div></div>`).join(''):'<div class="empty">Nog geen vaste lasten ingevoerd.</div>'}</div>`;
 }
 function filteredTransactions(){
  let list=[...state.transactions],t=now();
  if(txFilter.period!=='ALL'){const[a,b]=range(txFilter.period,t);list=list.filter(x=>x.occurredAt>=a&&x.occurredAt<=b)}
- if(txFilter.category)list=list.filter(x=>x.category===txFilter.category);
+ if(txFilter.category)list=list.filter(x=>displayCategory(x)===txFilter.category);
  return list.sort((a,b)=>b.occurredAt-a.occurredAt);
 }
 function renderTransactions(){
@@ -256,7 +333,7 @@ function renderReview(){
 }
 function renderOverview(){
  const e=document.getElementById('overview'),m=monthStats(),groups={};
- m.list.filter(t=>t.amountCents<0).forEach(t=>{const k=t.category||potById(t.potId)?.name||'Nog indelen';groups[k]=(groups[k]||0)+Math.abs(t.amountCents)});
+ m.list.filter(t=>t.amountCents<0).forEach(t=>{const k=displayCategory(t)||'Nog indelen';groups[k]=(groups[k]||0)+Math.abs(t.amountCents)});
  const rows=Object.entries(groups).sort((a,b)=>b[1]-a[1]);
  e.innerHTML=`<div class="head"><div class="title">Overzicht</div></div><div class="card balance"><div class="eyebrow">Deze maand</div><div class="big" style="font-size:31px">${fmt(m.income-m.expense)}</div><div class="grid2"><div class="mini"><small>Inkomsten</small><strong class="pos">${fmt(m.income)}</strong></div><div class="mini"><small>Uitgaven</small><strong class="neg">${fmt(m.expense)}</strong></div></div></div><div class="head"><div class="title">Uitgaven per onderwerp</div></div><div class="card list">${rows.length?rows.map(([k,v])=>`<div class="setrow"><div><strong>${esc(k)}</strong><small>${m.expense?Math.round(v/m.expense*100):0}%</small></div><div class="value">${fmt(v)}</div></div>`).join(''):'<div class="empty">Nog geen uitgaven deze maand.</div>'}</div>`;
 }
@@ -325,19 +402,19 @@ function saveGoal(){
  closeModal();
 }
 function openTransaction(id=null){
- const t=id?state.transactions.find(x=>String(x.id)===String(id)):null,isIncome=t?t.amountCents>=0:false,currentPot=t?.potId||null;
- modal(t?'Transactie aanpassen':'Handmatige transactie',`${selectField('Type','tType',`<option value="EXPENSE" ${!isIncome?'selected':''}>Uitgave</option><option value="INCOME" ${isIncome?'selected':''}>Inkomst</option>`)}${field('Naam / winkel','tMerchant',t?.merchant||'')}${field('Omschrijving','tDesc',t?.description||'')}${field('Bedrag','tAmount',t?String((Math.abs(t.amountCents)/100).toFixed(2)).replace('.',','):'','text','inputmode="decimal"')}${selectField('Onderwerp','tCategory',`<option value="">Nog indelen</option>${categoryOptions(t?.category||'')}`)}${selectField('Budgetpotje','tPot',potOptions(currentPot,true),'onchange="syncTransactionPot()"')}${field('Datum','tDate',new Date(t?.occurredAt||now()).toISOString().slice(0,10),'date')}${field('Tijd','tTime',timeLabel(t?.occurredAt||now()),'time')}<button class="primary" onclick="saveTransaction(${t?.id||'null'})">Opslaan</button>${t?'<button class="dangerbtn" onclick="removeTransaction('+t.id+')">Verwijderen</button>':''}`);
+ const t=id?state.transactions.find(x=>String(x.id)===String(id)):null,isIncome=t?t.amountCents>=0:false,currentPot=t?.potId||null,currentCategory=t?.potId?potById(t.potId)?.name||t?.category||'':t?.category||'';
+ modal(t?'Transactie aanpassen':'Handmatige transactie',`${selectField('Type','tType',`<option value="EXPENSE" ${!isIncome?'selected':''}>Uitgave</option><option value="INCOME" ${isIncome?'selected':''}>Inkomst</option>`)}${field('Naam / winkel','tMerchant',t?.merchant||'')}${field('Omschrijving','tDesc',t?.description||'')}${field('Bedrag','tAmount',t?String((Math.abs(t.amountCents)/100).toFixed(2)).replace('.',','):'','text','inputmode="decimal"')}${selectField('Onderwerp','tCategory',`<option value="">Nog indelen</option>${categoryOptions(currentCategory)}`)}${selectField('Budgetpotje','tPot',potOptions(currentPot,true),'onchange="syncTransactionPot()"')}${field('Datum','tDate',new Date(t?.occurredAt||now()).toISOString().slice(0,10),'date')}${field('Tijd','tTime',timeLabel(t?.occurredAt||now()),'time')}<button class="primary" onclick="saveTransaction(${t?.id||'null'})">Opslaan</button>${t?'<button class="dangerbtn" onclick="removeTransaction('+t.id+')">Verwijderen</button>':''}`);
 }
 function syncTransactionPot(){
  const p=potById(document.getElementById('tPot')?.value),c=document.getElementById('tCategory');
- if(p&&c&&!c.value)c.value=p.name;
+ if(p&&c)c.value=p.name;
 }
 function saveTransaction(id){
  const amount=Math.abs(num(document.getElementById('tAmount').value));
  if(!amount){showToast('Controleer invoer','Bedrag is verplicht.');return}
  const type=document.getElementById('tType').value,date=document.getElementById('tDate').value,time=document.getElementById('tTime').value||'00:00',stamp=new Date(`${date}T${time}:00`).getTime(),old=id?state.transactions.find(x=>String(x.id)===String(id)):null,potId=document.getElementById('tPot').value?Number(document.getElementById('tPot').value):null;
  let category=document.getElementById('tCategory').value;
- if(!category&&potId)category=potById(potId)?.name||'';
+ if(potId)category=potById(potId)?.name||category;
  if(type==='INCOME'&&!category)category='Inkomen';
  Store.saveTx({...(old||{}),id:old?.id||0,source:old?.source||'MANUAL',importedAt:old?.importedAt||now(),occurredAt:Number.isFinite(stamp)?stamp:now(),amountCents:type==='INCOME'?amount:-amount,merchant:document.getElementById('tMerchant').value.trim(),description:document.getElementById('tDesc').value.trim(),category,potId,cardReference:old?.cardReference||'',bankReference:old?.bankReference||'',dateText:'',timeText:'',dedupeKey:old?.dedupeKey||'',affectsBalance:old?.affectsBalance!==false,excludeFromPots:old?.excludeFromPots||false,matchedBankTransactionId:old?.matchedBankTransactionId||null,balanceAfterCents:old?.balanceAfterCents||null});
  closeModal();
@@ -348,17 +425,18 @@ function removeTransaction(id){
 }
 function openTxDetail(id){
  const t=state.transactions.find(x=>String(x.id)===String(id));if(!t)return;
- const lines=Store.receiptLines(id),rows=[['Bedrag',fmt(t.amountCents)],['Categorie',t.category],['Budgetpotje',potById(t.potId)?.name||''],['Datum',dateLabel(t.occurredAt)],['Tijd',timeLabel(t.occurredAt)],['Bron',t.source],['Omschrijving',t.description],['Kaart',t.cardReference],['Referentie',t.bankReference]].filter(x=>x[1]);
- modal(t.merchant||'Transactie',`<div class="detail">${rows.map(([k,v])=>`<div class="drow"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('')}</div>${lines.length?`<div class="head"><div class="title">Bonregels</div></div><div class="card" style="padding:0 12px">${lines.map(l=>`<div class="receiptline" onclick="openReceiptLine(${l.id},${id})"><strong>${esc(l.description)}</strong><small>${fmt(l.amountCents)}${l.category?` · ${esc(l.category)}`:' · Nog indelen'}${l.potId&&potById(l.potId)?` · ${esc(potById(l.potId).name)}`:''}</small></div>`).join('')}</div>`:''}<button class="ghost" onclick="openTransaction(${id})">Transactie bewerken</button>`);
+ const lines=Store.receiptLines(id),rows=[['Bedrag',fmt(t.amountCents)],['Categorie',displayCategory(t)],['Budgetpotje',potById(t.potId)?.name||''],['Datum',dateLabel(t.occurredAt)],['Tijd',timeLabel(t.occurredAt)],['Bron',t.source],['Omschrijving',t.description],['Kaart',t.cardReference],['Referentie',t.bankReference]].filter(x=>x[1]);
+ modal(t.merchant||'Transactie',`<div class="detail">${rows.map(([k,v])=>`<div class="drow"><span>${esc(k)}</span><span>${esc(v)}</span></div>`).join('')}</div>${lines.length?`<div class="head"><div class="title">Bonregels</div></div><div class="card" style="padding:0 12px">${lines.map(l=>`<div class="receiptline" onclick="openReceiptLine(${l.id},${id})"><strong>${esc(l.description)}</strong><small>${fmt(l.amountCents)}${l.potId&&potById(l.potId)?` · ${esc(potById(l.potId).name)}`:l.category?` · ${esc(l.category)}`:' · Nog indelen'}</small></div>`).join('')}</div>`:''}<button class="ghost" onclick="openTransaction(${id})">Transactie bewerken</button>`);
 }
 function openReceiptLine(lineId,txId){
  const l=Store.receiptLines(txId).find(x=>String(x.id)===String(lineId));if(!l)return;
- modal('Bonregel indelen',`<div class="mini"><strong>${esc(l.description)}</strong><small>${fmt(l.amountCents)}</small></div>${selectField('Onderwerp','rlCategory',categoryOptions(l.category||''))}${selectField('Budgetpotje','rlPot',potOptions(l.potId,true),'onchange="syncCategoryFromPot(\'rlPot\',\'rlCategory\')"')}<label class="checkrow"><input id="rlLearn" type="checkbox" checked> Deze productomschrijving voortaan onthouden</label><button class="primary" onclick="saveReceiptLine(${lineId},${txId})">Opslaan</button>`);
+ const currentCategory=l.potId?potById(l.potId)?.name||l.category||'':l.category||'';
+ modal('Bonregel indelen',`<div class="mini"><strong>${esc(l.description)}</strong><small>${fmt(l.amountCents)}</small></div>${selectField('Onderwerp','rlCategory',categoryOptions(currentCategory))}${selectField('Budgetpotje','rlPot',potOptions(l.potId,true),'onchange="syncCategoryFromPot(\'rlPot\',\'rlCategory\')"')}<label class="checkrow"><input id="rlLearn" type="checkbox" checked> Deze productomschrijving voortaan onthouden</label><button class="primary" onclick="saveReceiptLine(${lineId},${txId})">Opslaan</button>`);
 }
 function saveReceiptLine(id,txId){
  const potId=document.getElementById('rlPot').value?Number(document.getElementById('rlPot').value):null;
  let category=document.getElementById('rlCategory').value;
- if(!category&&potId)category=potById(potId)?.name||'';
+ if(potId)category=potById(potId)?.name||category;
  Store.saveReceiptLine({id,transactionId:txId,category,potId,learn:document.getElementById('rlLearn').checked});
  closeModal();
 }
@@ -373,7 +451,7 @@ function openCategorize(id){
 function saveUnknown(id){
  const potId=document.getElementById('uPot').value?Number(document.getElementById('uPot').value):null;
  let category=document.getElementById('uCategory').value;
- if(!category&&potId)category=potById(potId)?.name||'';
+ if(potId)category=potById(potId)?.name||category;
  Store.assignUnknown(id,category,potId);closeModal();
 }
 function openSpend(){
@@ -389,15 +467,23 @@ function checkSpend(){
  else{r.className='result show warn';t.textContent='Budget wordt overschreden';x.textContent=`Dit gaat ${fmt(Math.abs(after))} over het actuele budget van ${p.name}.`}
 }
 function openFilter(){
- modal('Filter',`${selectField('Periode','filterPeriod',`<option value="ALL" ${txFilter.period==='ALL'?'selected':''}>Alles</option><option value="WEEK" ${txFilter.period==='WEEK'?'selected':''}>Deze week</option><option value="MONTH" ${txFilter.period==='MONTH'?'selected':''}>Deze maand</option><option value="YEAR" ${txFilter.period==='YEAR'?'selected':''}>Dit jaar</option>`)}${selectField('Onderwerp','filterCategory',`<option value="">Alle onderwerpen</option>${categoryOptions(txFilter.category)}`)}<button class="primary" onclick="applyFilter()">Toepassen</button>`);
+ modal('Filter',`${selectField('Periode','filterPeriod',`<option value="ALL" ${txFilter.period==='ALL'?'selected':''}>Alles</option><option value="WEEK" ${txFilter.period==='WEEK'?'selected':''}>Deze week</option><option value="SALARY_PERIOD" ${txFilter.period==='SALARY_PERIOD'?'selected':''}>Huidige salarisperiode</option><option value="MONTH" ${txFilter.period==='MONTH'?'selected':''}>Deze maand</option><option value="YEAR" ${txFilter.period==='YEAR'?'selected':''}>Dit jaar</option>`)}${selectField('Onderwerp','filterCategory',`<option value="">Alle onderwerpen</option>${categoryOptions(txFilter.category)}`)}<button class="primary" onclick="applyFilter()">Toepassen</button>`);
 }
 function applyFilter(){
  txFilter={period:document.getElementById('filterPeriod').value,category:document.getElementById('filterCategory').value};
  closeModal();renderTransactions();showScreen('transactions');
 }
 function openSettings(){
- modal('Instellingen',`<div class="card list" style="margin-top:12px"><div class="setrow"><div><strong>Financiële periode</strong><small>Van salaris tot salaris</small></div><div class="value">23e → 22e</div></div><div class="setrow"><div><strong>Weekbudget reset</strong><small>Weekpotjes</small></div><div class="value">Maandag</div></div><div class="setrow"><div><strong>Lokale opslag</strong><small>${native?'Room/SQLite op Android':'Browseropslag alleen voor Pages-preview'}</small></div><div class="pos">Actief</div></div></div><button class="ghost" onclick="Store.notificationSettings()">Notificatietoegang Rabobank / Wallet</button><div class="hint">Alle bedragen, periodes, namen en zichtbaarheid van potjes zijn vrij aanpasbaar. GitHub Pages is alleen de tijdelijke interfacepreview; de Android-app bewaart financiële gegevens lokaal.</div>`);
+ const s=state.settings||defaultSettings(),si=salaryInfo();
+ modal('Instellingen',`${field('Salarisperiode start op dag','salaryStartDay',s.salaryStartDay,'number','min="1" max="31" inputmode="numeric"')}${selectField('Weekbudget reset op','weekStartDay',weekdayOptions(s.weekStartDay))}<div class="goalestimate"><span>Huidige salarisperiode</span><strong>${si.range}</strong></div><button class="primary" onclick="saveAppSettings()">Opslaan</button><div class="card list" style="margin-top:12px"><div class="setrow"><div><strong>Lokale opslag</strong><small>${native?'Room/SQLite op Android':'Browseropslag alleen voor Pages-preview'}</small></div><div class="pos">Actief</div></div></div><button class="ghost" onclick="Store.notificationSettings()">Notificatietoegang Rabobank / Wallet</button><div class="hint">Wijzigingen in salarisdag of weekreset worden meteen gebruikt voor alle potjes met die periode. Bestaande transacties blijven behouden en de actuele budgetstand wordt opnieuw berekend.</div>`);
 }
+function saveAppSettings(){
+ const salaryStartDay=Math.max(1,Math.min(31,Number(document.getElementById('salaryStartDay').value)||23));
+ const weekStartDay=Math.max(0,Math.min(6,Number(document.getElementById('weekStartDay').value)));
+ Store.saveSettings({salaryStartDay,weekStartDay});
+ closeModal();
+}
+
 window.BudgetAppNative={
  refresh(){reload()},
  onPdfImport(json){reload();try{const r=JSON.parse(json);showToast('PDF geïmporteerd',`${r.added} toegevoegd · ${r.skipped} dubbelen overgeslagen${r.balanceChecked?` · saldo ${r.balanceValid?'klopt':'wijkt af'}`:''}`)}catch{showToast('PDF geïmporteerd','Import afgerond.')}},
