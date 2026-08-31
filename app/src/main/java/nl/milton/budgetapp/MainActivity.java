@@ -171,6 +171,10 @@ public class MainActivity extends ComponentActivity {
         @JavascriptInterface
         public String getState() {
             try {
+                SharedPreferences prefs = getSharedPreferences("budgetapp", MODE_PRIVATE);
+                int salaryStartDay = Math.max(1, Math.min(31, prefs.getInt("salary_start_day", 23)));
+                int weekStartDay = Math.max(0, Math.min(6, prefs.getInt("week_start_day", 1)));
+
                 JSONObject root = new JSONObject();
                 JSONArray pots = new JSONArray();
                 long currentTime = System.currentTimeMillis();
@@ -183,7 +187,7 @@ public class MainActivity extends ComponentActivity {
                     o.put("active", pot.active);
                     o.put("hiddenFromOverview", pot.hiddenFromOverview);
                     o.put("sortOrder", pot.sortOrder);
-                    BudgetPeriods.Range r = BudgetPeriods.currentRange(pot.periodType, currentTime);
+                    BudgetPeriods.Range r = BudgetPeriods.currentRange(pot.periodType, currentTime, salaryStartDay, weekStartDay);
                     long spent = dao.sumDirectSpendForPot(pot.id, r.startMs, r.endMs) + dao.sumReceiptSpendForPot(pot.id, r.startMs, r.endMs);
                     o.put("spentCents", spent);
                     pots.put(o);
@@ -232,13 +236,17 @@ public class MainActivity extends ComponentActivity {
                 }
                 root.put("unknown", unknown);
 
-                SharedPreferences prefs = getSharedPreferences("budgetapp", MODE_PRIVATE);
+                JSONObject settings = new JSONObject();
+                settings.put("salaryStartDay", salaryStartDay);
+                settings.put("weekStartDay", weekStartDay);
+                root.put("settings", settings);
+
                 if (prefs.getBoolean("has_known_balance", false)) root.put("knownBalanceCents", prefs.getLong("known_balance_cents", 0L));
                 else root.put("knownBalanceCents", JSONObject.NULL);
                 root.put("platform", "android");
                 return root.toString();
             } catch (Exception e) {
-                return "{\"pots\":[],\"transactions\":[],\"fixedCosts\":[],\"unknown\":[],\"goal\":null,\"knownBalanceCents\":null,\"platform\":\"android\"}";
+                return "{\"pots\":[],\"transactions\":[],\"fixedCosts\":[],\"unknown\":[],\"goal\":null,\"knownBalanceCents\":null,\"settings\":{\"salaryStartDay\":23,\"weekStartDay\":1},\"platform\":\"android\"}";
             }
         }
 
@@ -339,6 +347,20 @@ public class MainActivity extends ComponentActivity {
                 goal.targetCents = Math.max(1L, o.optLong("targetCents", 3_000_000L));
                 goal.active = true;
                 if (goal.id > 0) dao.updateSavingsGoal(goal); else dao.insertSavingsGoal(goal);
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void saveSettings(String json) {
+            try {
+                JSONObject o = new JSONObject(json);
+                int salaryStartDay = Math.max(1, Math.min(31, o.optInt("salaryStartDay", 23)));
+                int weekStartDay = Math.max(0, Math.min(6, o.optInt("weekStartDay", 1)));
+                getSharedPreferences("budgetapp", MODE_PRIVATE)
+                        .edit()
+                        .putInt("salary_start_day", salaryStartDay)
+                        .putInt("week_start_day", weekStartDay)
+                        .apply();
             } catch (Exception ignored) {}
         }
 
