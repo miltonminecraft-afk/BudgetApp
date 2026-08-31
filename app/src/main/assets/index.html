@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1116">
+<title>Budget</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+<header class="top">
+<div><div class="brand">Budget</div><div class="sub">Lokaal financieel overzicht</div></div>
+<button class="gear" id="settingsButton">⚙</button>
+</header>
+<section id="home" class="screen active"></section>
+<section id="budgets" class="screen"></section>
+<section id="transactions" class="screen"></section>
+<section id="review" class="screen"></section>
+<section id="overview" class="screen"></section>
+</div>
+<nav class="nav">
+<button id="nhome" class="active" data-screen="home"><b>⌂</b>Home</button>
+<button id="nbudget" data-screen="budgets"><b>▣</b>Budget</button>
+<button id="ntx" data-screen="transactions"><b>≡</b>Transacties</button>
+<button id="nover" data-screen="overview"><b>▥</b>Overzicht</button>
+</nav>
+<div id="modal" class="modalbg"><div class="modal"><div class="handle"></div><div class="row"><div class="title" id="modalTitle"></div><button class="close" id="modalClose">✕</button></div><div id="modalBody"></div></div></div>
+<div id="toast" class="toast"><strong id="toastTitle"></strong><small id="toastText"></small></div>
+<script src="app.js"></script>
+</body>
+</html>
