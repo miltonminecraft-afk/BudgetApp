@@ -69,9 +69,10 @@ function previewLoad(){
   return raw?normalizeState(JSON.parse(raw)):seed();
  }catch{return seed()}
 }
-function previewSave(){
- state.dataVersion=4;
- localStorage.setItem(KEY,JSON.stringify(state));
+function previewSave(data=state){
+ if(!data)return;
+ data.dataVersion=4;
+ localStorage.setItem(KEY,JSON.stringify(data));
 }
 function migrateSubjectPots(s){
  if(localStorage.getItem(MIGRATION_KEY)==='1')return s;
@@ -84,7 +85,7 @@ function migrateSubjectPots(s){
  }
  for(const p of missing)s.pots.push({...p,id:uid()});
  localStorage.setItem(MIGRATION_KEY,'1');
- previewSave();
+ previewSave(s);
  return s;
 }
 const Store={
