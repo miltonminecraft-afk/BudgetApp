@@ -29,6 +29,15 @@ public interface BudgetDao {
     @Delete
     void deletePot(PotEntity pot);
 
+    @Query("UPDATE transactions SET potId = NULL WHERE potId = :potId")
+    void clearTransactionPot(long potId);
+
+    @Query("UPDATE receipt_lines SET potId = NULL WHERE potId = :potId")
+    void clearReceiptLinePot(long potId);
+
+    @Query("UPDATE merchant_rules SET potId = NULL WHERE potId = :potId")
+    void clearRulePot(long potId);
+
     @Query("SELECT * FROM transactions ORDER BY occurredAt DESC, id DESC LIMIT :limit")
     List<TransactionEntity> getRecentTransactions(int limit);
 
@@ -41,6 +50,12 @@ public interface BudgetDao {
     @Query("SELECT * FROM transactions WHERE source = 'NOTIFICATION' AND amountCents = :amountCents AND dateText = :dateText AND timeText = :timeText AND merchant = :merchant AND cardReference = :cardReference AND bankReference = :bankReference LIMIT 1")
     TransactionEntity findStrictNotificationMatch(long amountCents, String dateText, String timeText, String merchant, String cardReference, String bankReference);
 
+    @Query("SELECT * FROM transactions WHERE source = 'NOTIFICATION' AND amountCents = :amountCents AND occurredAt BETWEEN :startMs AND :endMs ORDER BY ABS(occurredAt - :targetMs) LIMIT 1")
+    TransactionEntity findNotificationForUnknown(long amountCents, long startMs, long endMs, long targetMs);
+
+    @Query("SELECT * FROM transactions WHERE source != 'RECEIPT' AND amountCents = :amountCents AND occurredAt BETWEEN :startMs AND :endMs ORDER BY ABS(occurredAt - :targetMs) LIMIT 10")
+    List<TransactionEntity> findBankCandidatesForReceipt(long amountCents, long startMs, long endMs, long targetMs);
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     long insertTransaction(TransactionEntity transaction);
 
@@ -49,6 +64,12 @@ public interface BudgetDao {
 
     @Delete
     void deleteTransaction(TransactionEntity transaction);
+
+    @Query("DELETE FROM unknown_items WHERE receiptLineId IN (SELECT id FROM receipt_lines WHERE transactionId = :transactionId)")
+    void deleteUnknownForTransaction(long transactionId);
+
+    @Query("DELETE FROM receipt_lines WHERE transactionId = :transactionId")
+    void deleteReceiptLinesForTransaction(long transactionId);
 
     @Query("SELECT COALESCE(SUM(amountCents), 0) FROM transactions WHERE affectsBalance = 1")
     long sumBalanceDelta();
@@ -109,6 +130,9 @@ public interface BudgetDao {
 
     @Query("SELECT * FROM unknown_items ORDER BY createdAt ASC, id ASC")
     List<UnknownItemEntity> getUnknownItems();
+
+    @Query("SELECT * FROM unknown_items WHERE id = :id LIMIT 1")
+    UnknownItemEntity getUnknownItem(long id);
 
     @Insert
     long insertUnknownItem(UnknownItemEntity item);
